@@ -1,0 +1,42 @@
+Import('env')
+
+env['LIBS'] = [
+    'asynchttp',
+]
+
+env['CPPPATH'] = [
+    '../components/asynchttp/include',
+]
+
+env['LIBPATH'] = [
+    '../components/asynchttp/lib',
+]
+
+env.ParseConfig(env['CONFIG_PARSER'])
+
+env.Substfile('fstracecheck.in',
+              '#fstracecheck.in',
+              SUBST_DICT = {
+                  '@CC@': '$CC',
+                  '@CONFIG_PARSER@': '$CONFIG_PARSER',
+                  '@FSTRACECHECK@': '$FSTRACECHECK',
+              }
+)
+env.Command('fstracecheck',
+            'fstracecheck.in',
+            [
+                Copy('$TARGET', '$SOURCE'),
+                Chmod('$TARGET', 0755),
+            ]
+)
+
+env.Program('webget',
+            [ 'webget.c' ])
+
+env.Program('webclient',
+            [ 'webclient.c' ])
+
+env.Program('icapscan',
+            [ 'icapscan.c' ])
+
+env.Program('jsonop-request-quick-close', ['jsonop-request-quick-close.c'])

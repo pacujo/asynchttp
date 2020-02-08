@@ -1,0 +1,8 @@
+Name: asynchttp
+Description:
+Version: 1.0
+Requires:
+Requires.private: fsdyn, async, asynctls, fstrace, nwutil
+Cflags: -I@prefix@/include
+Libs: -L@prefix@/lib -lasynchttp
+Libs.private:

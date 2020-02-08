@@ -1,0 +1,26 @@
+Import('env')
+
+import os
+
+include = env.Install(
+    'include/asynchttp',
+    [
+        '#include/envelope.h',
+        '#include/framer.h',
+        '#include/decoder.h',
+        '#include/field_reader.h',
+        '#include/connection.h',
+        '#include/client.h',
+        '#include/jsonop.h',
+        '#include/icap.h',
+    ],
+)
+lib = env.Install('lib', ['../../src/libasynchttp.a'])
+
+env.Alias(
+    'install',
+    env.Install(os.path.join(env['PREFIX'], 'include/asynchttp'), include),
+)
+env.Alias('install', env.Install(os.path.join(env['PREFIX'], 'lib'), lib))
+
+env['CONFIG_BUILDER'](env)

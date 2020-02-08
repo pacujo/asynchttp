@@ -1,0 +1,25 @@
+Import('env')
+import os
+
+env.Command('asynchttp_version.c', [],
+            """echo 'const char *asynchttp_version_tag = \
+    "F-S_v:: asynchttp 1.0.%s";' >$TARGET""" % os.getenv("BUILD_NUMBER", "9999"))
+
+env['CCFLAGS'] += ' -fPIC'      # make objects usable for shared libs
+
+env['CPPPATH'] = [
+    '#include',
+]
+
+env.ParseConfig(env['CONFIG_PARSER'])
+
+env.StaticLibrary('asynchttp',
+                  [ 'jsonop.c',
+                    'client.c',
+                    'connection.c',
+                    'framer.c',
+                    'decoder.c',
+                    'field_reader.c',
+                    'envelope.c',
+                    'icap.c',
+                    'asynchttp_version.c' ])
