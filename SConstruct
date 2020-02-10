@@ -32,7 +32,7 @@ TARGET_FLAGS = {
 }
 
 def libconfig_builder(env):
-    env.Install('fscomp-libconfig.json', '#fscomp-libconfig.json')
+    env.Install('.', '#fscomp-libconfig.json')
 
 def libconfig_parser():
     return '$ARCHBUILDDIR/components/asynchttp/.fscomp/libconfig'
