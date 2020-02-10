@@ -88,6 +88,27 @@ void http_op_close(http_op_t *op);
 
 #ifdef __cplusplus
 }
+
+#include <functional>
+#include <memory>
+
+namespace fsecure {
+namespace asynchttp {
+
+// std::unique_ptr for http_client_t with custom deleter.
+using HttpClientPtr =
+    std::unique_ptr<http_client_t, std::function<void(http_client_t *)>>;
+
+// Create HttpClientPtr that takes ownership of the provided http_client_t. Pass
+// nullptr to create an instance which doesn't contain any http_client_t object.
+inline HttpClientPtr make_http_client_ptr(http_client_t *http_client)
+{
+    return { http_client, http_client_close };
+}
+
+} // namespace asynchttp
+} // namespace fsecure
+
 #endif
 
 #endif
