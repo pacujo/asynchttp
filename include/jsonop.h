@@ -44,6 +44,26 @@ void jsonop_unregister_callback(jsonop_t *op);
 
 #ifdef __cplusplus
 }
+
+#include <functional>
+#include <memory>
+
+namespace fsecure {
+namespace asynchttp {
+
+// std::unique_ptr for jsonop_t with custom deleter.
+using JsonopPtr = std::unique_ptr<jsonop_t, std::function<void(jsonop_t *)>>;
+
+// Create JsonopPtr that takes ownership of the provided jsonop_t. Pass
+// nullptr to create an instance which doesn't contain any jsonop_t object.
+inline JsonopPtr make_jsonop_ptr(jsonop_t *op)
+{
+    return { op, jsonop_close };
+}
+
+} // namespace asynchttp
+} // namespace fsecure
+
 #endif
 
 #endif
