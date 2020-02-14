@@ -84,6 +84,7 @@ static void probe_receive(globals_t *g)
         if (errno == EAGAIN)
             return;
         perror(PROGRAM);
+        close_and_exit(g);
         return;
     }
     fprintf(stderr,
