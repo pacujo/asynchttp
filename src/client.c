@@ -517,7 +517,7 @@ static void op_send_http_connect(http_op_t *op)
 {
     http_env_t *connect_request =
         make_http_env_request("CONNECT", op->host_entry, "HTTP/1.1");
-    http_env_add_header(op->request, "Host", op->host_entry);
+    http_env_add_header(connect_request, "Host", op->host_entry);
     action_1 request_closed_cb = { connect_request, (act_1) destroy_http_env };
     farewellstream_t *fwstr =
         open_relaxed_farewellstream(op->client->async, emptystream,
