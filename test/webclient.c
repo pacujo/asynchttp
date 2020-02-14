@@ -27,7 +27,7 @@ typedef struct {
     async_t *async;
     fsadns_t *dns;
     const char *uri;
-    const char *proxy_host;
+    const char *proxy;
     const char *pem_path;
     tls_ca_bundle_t *ca_bundle;
     http_client_t *client;
@@ -119,8 +119,8 @@ static void get_next(globals_t *g)
 static void get_it(globals_t *g)
 {
     g->client = open_http_client_2(g->async, g->dns);
-    if (g->proxy_host)
-        http_client_set_proxy(g->client, g->proxy_host, 3128);
+    if (g->proxy)
+        http_client_set_proxy_from_uri(g->client, g->proxy);
     if (g->unverified) {
         g->ca_bundle = make_unverified_tls_ca_bundle();
         http_client_set_tls_ca_bundle(g->client, g->ca_bundle);
@@ -157,7 +157,7 @@ static void print_usage(FILE *f)
     fprintf(f, "Usage: %s [ <options> ] <uri> [ <pem-file> ]\n", PROGRAM);
     fprintf(f, "\n");
     fprintf(f, "Options:\n");
-    fprintf(f, "    --proxy-host <host-or-address>\n");
+    fprintf(f, "    --proxy <uri>\n");
     fprintf(f, "    --trace-include <regex>\n");
     fprintf(f, "    --trace-exclude <regex>\n");
     fprintf(f, "    --spam <interval>\n");
@@ -173,13 +173,13 @@ static void bad_usage()
 }
 
 static int parse_cmdline(int argc, const char *const argv[],
-                         const char **proxy_host,
+                         const char **proxy,
                          const char **trace_include, const char **trace_exclude,
                          int64_t *spam,
                          bool *unverified, bool *pinned,
                          const char **uri, const char **pem_path)
 {
-    *proxy_host = NULL;
+    *proxy = NULL;
     *trace_include = NULL;
     *trace_exclude = NULL;
     *spam = -1;
@@ -187,10 +187,10 @@ static int parse_cmdline(int argc, const char *const argv[],
     *pinned = false;
     int i = 1;
     while (i < argc && argv[i][0] == '-') {
-        if (!strcmp(argv[i], "--proxy-host")) {
+        if (!strcmp(argv[i], "--proxy")) {
             if (++i >= argc)
                 bad_usage();
-            *proxy_host = argv[i++];
+            *proxy = argv[i++];
             continue;
         }
         if (!strcmp(argv[i], "--trace-include")) {
@@ -241,14 +241,14 @@ static int parse_cmdline(int argc, const char *const argv[],
 
 int main(int argc, const char *const *argv)
 {
-    const char *proxy_host;
+    const char *proxy;
     const char *trace_include;
     const char *trace_exclude;
     int64_t spam;
     bool unverified, pinned;
     const char *uri;
     const char *pem_path;
-    int i = parse_cmdline(argc, argv, &proxy_host, &trace_include,
+    int i = parse_cmdline(argc, argv, &proxy, &trace_include,
                           &trace_exclude, &spam, &unverified, &pinned,
                           &uri, &pem_path);
     if (i != argc) {
@@ -273,7 +273,7 @@ int main(int argc, const char *const *argv)
     globals_t g = {
         .async = make_async(),
         .uri = uri,
-        .proxy_host = proxy_host,
+        .proxy = proxy,
         .pem_path = pem_path,
         .spam = spam,
         .unverified = unverified,
