@@ -32,6 +32,15 @@ void http_client_set_max_envelope_size(http_client_t *client, size_t size);
 void http_client_set_proxy(http_client_t *client,
                            const char *proxy_host, unsigned port);
 
+/* Set the proxy address specified in the given URI. The URI must have
+ * the following format:
+ *
+ * ("http" | "https") "://" host [":" port] ["/"]
+ *
+ * The default port is 80 and 443 for "http" and "https", respectively.
+ */
+bool http_client_set_proxy_from_uri(http_client_t *client, const char *uri);
+
 /* Explicitly prevent the use of an HTTP proxy. */
 void http_client_set_direct(http_client_t *client);
 

@@ -213,17 +213,24 @@ void http_client_set_max_envelope_size(http_client_t *client, size_t size)
     client->max_envelope_size = size;
 }
 
+static void set_proxy(http_client_t *client,
+                      char *proxy_host,
+                      unsigned port)
+{
+    fsfree(client->proxy_host);
+    client->proxy_mode = PROXY_EXPLICIT;
+    client->proxy_host = proxy_host;
+    client->proxy_port = port;
+    flush_free_conn_pool(client);
+}
+
 FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_PROXY, "UID=%64u HOST=%s PORT=%u");
 
 void http_client_set_proxy(http_client_t *client,
                            const char *proxy_host, unsigned port)
 {
     FSTRACE(ASYNCHTTP_CLIENT_SET_PROXY, client->uid, proxy_host, port);
-    fsfree(client->proxy_host);
-    client->proxy_mode = PROXY_EXPLICIT;
-    client->proxy_host = charstr_dupstr(proxy_host);
-    client->proxy_port = port;
-    flush_free_conn_pool(client);
+    set_proxy(client, charstr_dupstr(proxy_host), port);
 }
 
 FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_DIRECT, "UID=%64u");
@@ -329,6 +336,35 @@ static const char *parse_authority(const char *s, char **host, unsigned *port)
             return NULL;    /* not really required by the RFC */
     }
     return path;
+}
+
+FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI, "UID=%64u URI=%s");
+FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_BAD_SCHEME, "UID=%64u URI=%s");
+FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_BAD_AUTHORITY,
+             "UID=%64u URI=%s");
+
+bool http_client_set_proxy_from_uri(http_client_t *client, const char *uri)
+{
+    bool https;
+    char *host;
+    unsigned port;
+    const char *auth = parse_uri_scheme(uri, &https, &port);
+    if (!auth) {
+        FSTRACE(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_BAD_SCHEME,
+                client->uid,
+                uri);
+        return false;
+    }
+    const char *path = parse_authority(auth, &host, &port);
+    if (!path) {
+        FSTRACE(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_BAD_AUTHORITY,
+                client->uid,
+                uri);
+        return false;
+    }
+    FSTRACE(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI, client->uid, uri);
+    set_proxy(client, host, port);
+    return true;
 }
 
 static const char *trace_state(void *pstate)
