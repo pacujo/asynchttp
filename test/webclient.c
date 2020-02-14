@@ -285,5 +285,6 @@ int main(int argc, const char *const *argv)
     fsadns_destroy_resolver(g.dns);
     async_flush(g.async, async_now(g.async) + 5 * ASYNC_S);
     destroy_async(g.async);
+    fstrace_close(trace);
     return g.success ? EXIT_SUCCESS : EXIT_FAILURE;
 }
