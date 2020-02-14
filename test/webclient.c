@@ -251,6 +251,8 @@ int main(int argc, const char *const *argv)
     int i = parse_cmdline(argc, argv, &proxy, &trace_include,
                           &trace_exclude, &spam, &unverified, &pinned,
                           &uri, &pem_path);
+    if (!proxy)
+        proxy = getenv("http_proxy");
     if (i != argc) {
         print_usage(stderr);
         return EXIT_FAILURE;
