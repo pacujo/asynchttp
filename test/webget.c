@@ -8,6 +8,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netdb.h>
+#include <fsdyn/charstr.h>
 #include <fsdyn/fsalloc.h>
 #include <async/async.h>
 #include <async/tls_connection.h>
@@ -143,10 +144,10 @@ static void start_transaction(globals_t *g, const char *host, int port,
                               const char *path)
 {
     g->request = make_http_env_request("GET", path, "HTTP/1.1");
-    g->host = fsalloc(strlen(host) + 30);
     if (port == 80)
-        strcpy(g->host, host);
-    else sprintf(g->host, "%s:%d", host, port);
+        g->host = charstr_dupstr(host);
+    else
+        g->host = charstr_printf("%s:%d", host, port);
     http_env_add_header(g->request, "Host", g->host);
     http_send(g->http_conn, g->request, HTTP_ENCODE_RAW, emptystream);
     http_terminate(g->http_conn);

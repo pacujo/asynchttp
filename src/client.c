@@ -493,9 +493,7 @@ http_op_t *http_client_make_request(http_client_t *client,
     FSTRACE(ASYNCHTTP_OP_CREATE, op->uid, op, client->uid, method, uri);
     op->method = charstr_dupstr(method);
     op->loc = list_append(client->operations, op);
-    size_t size = snprintf(NULL, 0, "%s:%u", op->host, op->port);
-    op->host_entry = fsalloc(size + 1);
-    sprintf(op->host_entry, "%s:%u", op->host, op->port);
+    op->host_entry = charstr_printf("%s:%u", op->host, op->port);
     if (op->proxy_host && !op->https)
         op->path = charstr_dupstr(uri);
     else op->path = charstr_dupstr(path);

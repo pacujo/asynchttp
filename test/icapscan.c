@@ -8,6 +8,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netdb.h>
+#include <fsdyn/charstr.h>
 #include <fsdyn/fsalloc.h>
 #include <async/async.h>
 #include <async/tcp_connection.h>
@@ -137,10 +138,10 @@ static void start_transaction(globals_t *g, const char *host, int port,
                               const char *path, int fd)
 {
     g->request = make_http_env_request("RESPMOD", path, "ICAP/1.0");
-    g->host = fsalloc(strlen(host) + 30);
     if (port == 1344)
-        strcpy(g->host, host);
-    else sprintf(g->host, "%s:%d", host, port);
+        g->host = charstr_dupstr(host);
+    else
+        g->host = charstr_printf("%s:%d", host, port);
     http_env_add_header(g->request, "Host", g->host);
     if (g->allow204)
         http_env_add_header(g->request, "Allow", "204");
