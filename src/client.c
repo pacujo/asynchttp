@@ -112,6 +112,7 @@ struct http_op {
     http_env_t *request;
     ssize_t content_length;
     action_1 callback;
+    bool recycle_connection;
 
     /* HTTP_OP_IDLE, HTTP_OP_CONNECTING_DIRECTLY,
      * HTTP_OP_CONNECTING_TO_PROXY, HTTP_OP_TUNNELING */
@@ -126,9 +127,6 @@ struct http_op {
 
     /* HTTP_OP_TUNNELING, HTTP_OP_SENT, HTTP_OP_RECEIVED, HTTP_OP_STREAMING */
     protocol_stack_t stack;
-
-    /* HTTP_OP_RECEIVED, HTTP_OP_STREAMING */
-    bool recycle_connection;
 
     /* HTTP_OP_STREAMING */
     bytestream_1 response_content;
@@ -186,6 +184,15 @@ static void flush_free_conn_pool(http_client_t *client)
     }
 }
 
+static void prevent_recycling_of_ops_in_flight(http_client_t *client)
+{
+    list_elem_t *e;
+    for (e = list_get_first(client->operations); e; e = list_next(e)) {
+        http_op_t *op = (http_op_t *) list_elem_get_value(e);
+        op->recycle_connection = false;
+    }
+}
+
 FSTRACE_DECL(ASYNCHTTP_CLIENT_CLOSE, "UID=%64u");
 
 void http_client_close(http_client_t *client)
@@ -222,6 +229,7 @@ static void set_proxy(http_client_t *client,
     client->proxy_host = proxy_host;
     client->proxy_port = port;
     flush_free_conn_pool(client);
+    prevent_recycling_of_ops_in_flight(client);
 }
 
 FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_PROXY, "UID=%64u HOST=%s PORT=%u");
@@ -241,6 +249,7 @@ void http_client_set_direct(http_client_t *client)
     fsfree(client->proxy_host);
     client->proxy_mode = PROXY_DIRECT;
     flush_free_conn_pool(client);
+    prevent_recycling_of_ops_in_flight(client);
 }
 
 FSTRACE_DECL(ASYNCHTTP_CLIENT_USE_SYSTEM_PROXY, "UID=%64u");
@@ -251,6 +260,7 @@ void http_client_use_system_proxy(http_client_t *client)
     fsfree(client->proxy_host);
     client->proxy_mode = PROXY_SYSTEM;
     flush_free_conn_pool(client);
+    prevent_recycling_of_ops_in_flight(client);
 }
 
 FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_CA_BUNDLE, "UID=%64u CA-BUNDLE=%p");
@@ -494,6 +504,7 @@ http_op_t *http_client_make_request(http_client_t *client,
     op->request_content = emptystream;
     op->content_length = HTTP_ENCODE_RAW;
     op->callback = NULL_ACTION_1;
+    op->recycle_connection = true;
     return op;
 }
 
@@ -681,6 +692,7 @@ static void response_received(http_op_t *op, const http_env_t *response)
     const char *field =
         http_env_get_matching_header(response, "connection");
     op->recycle_connection =
+        op->recycle_connection &&
         charstr_case_cmp(http_env_get_protocol(response),
                          "HTTP/1.1") >= 0 &&
         (!field || strcmp(field, "close"));
