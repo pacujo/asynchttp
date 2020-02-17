@@ -23,12 +23,18 @@ void http_client_close(http_client_t *client);
 
 /* Set the maximum size for the response headers accepted from the
  * server. If the size is exceeded on reception, errno is set to
- * EOVERFLOW. The default: 100000. */
+ * EOVERFLOW. The default: 100000.
+ *
+ * The effect of calling this function after the first call to
+ * http_client_make_request() is unspecified. */
 void http_client_set_max_envelope_size(http_client_t *client, size_t size);
 
 /* Set the explicit proxy address. Set proxy_host to NULL (the default)
  * for no proxy. The proxy_host string is only needed for the duration
- * of the call. */
+ * of the call.
+ *
+ * The setting affects subsequent calls to http_client_make_request().
+ * Previously initiated operations are unaffected. */
 void http_client_set_proxy(http_client_t *client,
                            const char *proxy_host, unsigned port);
 
@@ -38,20 +44,31 @@ void http_client_set_proxy(http_client_t *client,
  * ("http" | "https") "://" host [":" port] ["/"]
  *
  * The default port is 80 and 443 for "http" and "https", respectively.
- */
+ *
+ * The setting affects subsequent calls to http_client_make_request().
+ * Previously initiated operations are unaffected. */
 bool http_client_set_proxy_from_uri(http_client_t *client, const char *uri);
 
-/* Explicitly prevent the use of an HTTP proxy. */
+/* Explicitly prevent the use of an HTTP proxy.
+ *
+ * The setting affects subsequent calls to http_client_make_request().
+ * Previously initiated operations are unaffected. */
 void http_client_set_direct(http_client_t *client);
 
 /* Use the system-wide HTTP proxy configuration if it is available.
  * Otherwise, do not use a proxy.
  *
- * This is the default mode. */
+ * This is the default mode.
+ *
+ * The setting affects subsequent calls to http_client_make_request().
+ * Previously initiated operations are unaffected. */
 void http_client_use_system_proxy(http_client_t *client);
 
 /* Set the TLS CA bundle. The CA bundle needs to exist until the HTTP
- * client is closed. */
+ * client is closed.
+ *
+ * The effect of calling this function after the first call to
+ * http_client_make_request() is unspecified. */
 void http_client_set_tls_ca_bundle(http_client_t *client,
                                    tls_ca_bundle_t *ca_bundle);
 
