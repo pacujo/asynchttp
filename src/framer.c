@@ -176,7 +176,7 @@ static ssize_t do_chunks_read(http_framer_t *framer, void *buf, size_t count)
                 encode_trailer(framer);
                 chunkencoder_close(framer->chunker);
                 set_chunked_state(framer, CHUNKED_TRAILER);
-                return 0;
+                return do_chunks_read(framer, buf, count);
             }
             return n;
         case CHUNKED_TRAILER:
@@ -184,7 +184,7 @@ static ssize_t do_chunks_read(http_framer_t *framer, void *buf, size_t count)
             if (n == 0) {
                 queuestream_close(framer->trailerq);
                 set_chunked_state(framer, CHUNKED_EOF);
-                return 0;
+                return do_chunks_read(framer, buf, count);
             }
             return n;
         case CHUNKED_EOF:
