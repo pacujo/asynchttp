@@ -64,11 +64,10 @@ void http_client_set_direct(http_client_t *client);
  * Previously initiated operations are unaffected. */
 void http_client_use_system_proxy(http_client_t *client);
 
-/* Set the TLS CA bundle. The CA bundle needs to exist until the HTTP
- * client is closed.
+/* Set the TLS CA bundle. Subsequent operations initiated with
+ * http_client_makerequest() use the given bundle.
  *
- * The effect of calling this function after the first call to
- * http_client_make_request() is unspecified. */
+ * This function can be called again any time. */
 void http_client_set_tls_ca_bundle(http_client_t *client,
                                    tls_ca_bundle_t *ca_bundle);
 

@@ -48,6 +48,7 @@ typedef struct {
 typedef struct {
     http_client_t *client;
     uint64_t uid;
+    tls_ca_bundle_t *ca_bundle;
     list_elem_t *loc;
     char *host;
     unsigned port;
@@ -99,6 +100,7 @@ typedef enum {
 struct http_op {
     http_client_t *client;
     uint64_t uid;
+    tls_ca_bundle_t *ca_bundle;
     list_elem_t *loc;           /* in client->operations */
     http_op_state_t state;
     bool https;
@@ -146,7 +148,7 @@ http_client_t *open_http_client_2(async_t *async, fsadns_t *dns)
     client->max_envelope_size = 100000;
     client->proxy_mode = PROXY_SYSTEM;
     client->proxy_host = NULL;
-    client->ca_bundle = TLS_SYSTEM_CA_BUNDLE;
+    client->ca_bundle = share_tls_ca_bundle(TLS_SYSTEM_CA_BUNDLE);
     client->callback = NULL_ACTION_1;
     return client;
 }
@@ -161,6 +163,7 @@ static protocol_stack_t peel_pool_element(pool_elem_t *pe)
     /* assert: pe->timer is no longer running */
     list_remove(pe->client->free_conn_pool, pe->loc);
     protocol_stack_t stack = pe->stack;
+    destroy_tls_ca_bundle(pe->ca_bundle);
     fsfree(pe->host);
     fsfree(pe);
     return stack;
@@ -208,6 +211,7 @@ void http_client_close(http_client_t *client)
     flush_free_conn_pool(client);
     destroy_list(client->free_conn_pool);
     fsfree(client->proxy_host);
+    destroy_tls_ca_bundle(client->ca_bundle);
     async_wound(client->async, client);
     client->async = NULL;
 }
@@ -269,7 +273,8 @@ void http_client_set_tls_ca_bundle(http_client_t *client,
                                    tls_ca_bundle_t *ca_bundle)
 {
     FSTRACE(ASYNCHTTP_CLIENT_SET_CA_BUNDLE, client->uid, ca_bundle);
-    client->ca_bundle = ca_bundle;
+    destroy_tls_ca_bundle(client->ca_bundle);
+    client->ca_bundle = share_tls_ca_bundle(ca_bundle);
 }
 
 static const char *parse_uri_scheme(const char *uri,
@@ -491,6 +496,7 @@ http_op_t *http_client_make_request(http_client_t *client,
         return NULL;
     }
     FSTRACE(ASYNCHTTP_OP_CREATE, op->uid, op, client->uid, method, uri);
+    op->ca_bundle = share_tls_ca_bundle(client->ca_bundle);
     op->method = charstr_dupstr(method);
     op->loc = list_append(client->operations, op);
     op->host_entry = charstr_printf("%s:%u", op->host, op->port);
@@ -533,7 +539,8 @@ static bool reuse_connection(http_op_t *op,
         next = list_next(e);
         pool_elem_t *pe = (pool_elem_t *) list_elem_get_value(e);
         if (!strcmp(pe->host, host) && pe->port == port &&
-            pe->https == https) {
+            pe->https == https &&
+            tls_ca_bundle_equal(pe->ca_bundle, op->ca_bundle)) {
             async_timer_cancel(pe->client->async, pe->timer);
             FSTRACE(ASYNCHTTP_OP_REUSE, op->uid, host, port,
                     https ? "HTTPS" : "HTTP", pe->uid);
@@ -673,7 +680,7 @@ static void op_wrap_tls(http_op_t *op)
     op->stack.tls_conn =
         open_tls_client_2(op->client->async,
                           tcp_get_input_stream(op->stack.tcp_conn),
-                          op->client->ca_bundle, op->host);
+                          op->ca_bundle, op->host);
     tls_set_plain_output_stream(op->stack.tls_conn,
                                 http_get_output_stream(op->stack.http_conn));
     switchstream_reattach(op->output_swstr,
@@ -793,6 +800,7 @@ static void move_connection_to_pool(http_op_t *op)
     http_client_t *client = op->client;
     pool_elem_t *pe = fsalloc(sizeof *pe);
     pe->client = client;
+    pe->ca_bundle = share_tls_ca_bundle(op->ca_bundle);
     pe->uid = fstrace_get_unique_id();
     FSTRACE(ASYNCHTTP_MOVE_TO_POOL, pe->uid, op->uid, client->uid);
     pe->host = op->host;
@@ -923,6 +931,7 @@ void http_op_close(http_op_t *op)
         default:
             assert(false);
     }
+    destroy_tls_ca_bundle(op->ca_bundle);
     set_op_state(op, HTTP_OP_CLOSED);
     async_wound(op->client->async, op);
 }
