@@ -251,6 +251,7 @@ void http_client_set_direct(http_client_t *client)
 {
     FSTRACE(ASYNCHTTP_CLIENT_SET_DIRECT, client->uid);
     fsfree(client->proxy_host);
+    client->proxy_host = NULL;
     client->proxy_mode = PROXY_DIRECT;
     flush_free_conn_pool(client);
     prevent_recycling_of_ops_in_flight(client);
@@ -262,6 +263,7 @@ void http_client_use_system_proxy(http_client_t *client)
 {
     FSTRACE(ASYNCHTTP_CLIENT_SET_DIRECT, client->uid);
     fsfree(client->proxy_host);
+    client->proxy_host = NULL;
     client->proxy_mode = PROXY_SYSTEM;
     flush_free_conn_pool(client);
     prevent_recycling_of_ops_in_flight(client);
