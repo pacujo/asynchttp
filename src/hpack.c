@@ -353,6 +353,7 @@ static void add(hpack_table_t *table, const char *name, const char *value)
         table->current_size += addition;
         table->dynamic_table[insert_point].name = charstr_dupstr(name);
         table->dynamic_table[insert_point].value = charstr_dupstr(value);
+        table->dynamic_table[insert_point].size = addition;
         table->dynamic_entry_count++;
     }
 }
