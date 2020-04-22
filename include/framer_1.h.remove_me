@@ -1,0 +1,93 @@
+#ifndef __ASYNCHTTP_FRAMER_1__
+#define __ASYNCHTTP_FRAMER_1__
+
+#include <async/bytestream_1.h>
+#include "envelope.h"
+
+typedef struct {
+    void *obj;
+    const struct http_framer_1_vt *vt;
+} http_framer_1;
+
+enum {
+    HTTP_ENCODE_CHUNKED = -1,   /* declare and encode chunked */
+    HTTP_ENCODE_RAW = -2        /* no envelope or content processing */
+};
+
+struct http_framer_1_vt {
+    bytestream_1 (*get_output_stream)(void *obj);
+
+    /* Terminating causes an end-of-file to be read out of the stream
+     * after all currently pending bytes have been read out. */
+    void (*terminate)(void *obj);
+
+    /* Submit an HTTP message for sending, ie, an HTTP envelope plus a
+     * content stream.
+     *
+     * The ownership of the content is taken over by the framer. The
+     * envelope stays owned by the caller and must not be disposed of
+     * until the content is closed by the framer.
+     *
+     * The 'content_length' parameter is interpreted as follows:
+     *
+     *   1. content_length >= 0:
+     *      - encode a "Content-length: <n>" field to as part of the
+     *        envelope header
+     *      - deliver 'content' unprocessed
+     *      - ignore the envelope trailer
+     *   2. content_length == HTTP_ENCODE_CHUNKED:
+     *      - encode a "Transfer-encoding: chunked" field as part of
+     *        the envelope header
+     *      - perform chunked encoding on 'content'
+     *      - after exhausting 'content'--but before closing
+     *        it--deliver the envelope trailer (*)
+     *   3. content_length == HTTP_ENCODE_RAW:
+     *      - do not add fields to the envelope header
+     *      - deliver 'content' unprocessed
+     *      - ignore the envelope trailer
+     *
+     * Note that it is possible to generate an illegal HTTP message.
+     *
+     * (*) The envelope trailer can be amended with
+     * http_env_add_trailer() up to the point when 'content' returns
+     * an end-of-stream. You can "buy time" by having 'content' return
+     * EAGAIN until the trailers have been added to 'envelope'. */
+    void (*enqueue)(void *obj, const http_env_t *envelope,
+                    ssize_t content_length, bytestream_1 content);
+    void (*register_farewell_callback)(void *obj, action_1 action);
+    void (*unregister_farewell_callback)(void *obj);
+};
+
+static inline
+bytestream_1 http_framer_1_get_output_stream(http_framer_1 framer)
+{
+    return framer.vt->get_output_stream(framer.obj);
+}
+
+static inline
+void http_framer_1_terminate(http_framer_1 framer)
+{
+    framer.vt->terminate(framer.obj);
+}
+
+static inline
+void http_framer_1_enqueue(http_framer_1 framer, const http_env_t *envelope,
+                           ssize_t content_length, bytestream_1 content)
+{
+    framer.vt->enqueue(framer.obj, envelope, content_length, content);
+}
+
+static inline
+void http_framer_1_register_farewell_callback(http_framer_1 framer,
+                                              action_1 action)
+{
+    framer.vt->register_farewell_callback(framer.obj, action);
+}
+
+static inline
+void http_framer_1_unregister_farewell_callback(http_framer_1 framer)
+{
+    framer.vt->unregister_farewell_callback(framer.obj);
+}
+
+#endif

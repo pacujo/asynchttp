@@ -5,6 +5,7 @@ import os
 include = env.Install(
     'include/asynchttp',
     [
+        '#include/api_constants.h',
         '#include/envelope.h',
         '#include/framer.h',
         '#include/decoder.h',
@@ -13,6 +14,16 @@ include = env.Install(
         '#include/client.h',
         '#include/jsonop.h',
         '#include/icap.h',
+        '#include/h2connection.h',
+        '#include/h2frame.h',
+        '#include/h2frame_constants.h',
+        '#include/h2frame_decoder.h',
+        '#include/h2frame_raw.h',
+        '#include/h2frame_yield.h',
+        '#include/h2framer.h',
+        '#include/hpack.h',
+        '#include/hpack_integer.h',
+        '#include/hpack_string.h',
     ],
 )
 lib = env.Install('lib', ['../../src/libasynchttp.a'])

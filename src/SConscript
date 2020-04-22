@@ -9,9 +9,14 @@ env['CCFLAGS'] += ' -fPIC'      # make objects usable for shared libs
 
 env['CPPPATH'] = [
     '#include',
+    '.'
 ]
 
 env.ParseConfig(env['CONFIG_PARSER'])
+
+env.Command('huffman_tables.c',
+            'gen_huffman.py',
+            """$SOURCE >$TARGET""")
 
 env.StaticLibrary('asynchttp',
                   [ 'jsonop.c',
@@ -22,4 +27,12 @@ env.StaticLibrary('asynchttp',
                     'field_reader.c',
                     'envelope.c',
                     'icap.c',
+                    'h2connection.c',
+                    'h2frame.c',
+                    'h2frame_raw.c',
+                    'h2frame_decoder.c',
+                    'h2frame_yield.c',
+                    'hpack.c',
+                    'hpack_integer.c',
+                    'hpack_string.c',
                     'asynchttp_version.c' ])
