@@ -187,7 +187,7 @@ ssize_t hpack_decode_string(const void *buffer, size_t size, char **s,
         if (decoding_size < 0 || decoding_size > max_length)
             return -1;
         q = fsalloc(decoding_size + 1);
-        hpack_decode_plain_string(p, encoding_size, q, decoding_size);
+        hpack_decode_plain_string(p, encoding_size, q, decoding_size + 1);
     }
     q[decoding_size] = '\0';
     *s = q;
