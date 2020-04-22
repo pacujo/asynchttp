@@ -30,6 +30,7 @@ typedef enum {
 
 typedef struct {
     async_t *async;
+    const char *server_hostname;
     tcp_conn_t *tcp_conn;
     tls_conn_t *tls_conn;
     h2conn_t *h2conn;
@@ -148,7 +149,7 @@ static bool handshake(globals_t *g)
     tls_set_plain_output_stream(g->tls_conn,
                                 h2conn_get_output_stream(g->h2conn));
     http_env_t *env = make_http_env_request("GET", "/", "");
-    http_env_add_header(env, "host", "google.com");
+    http_env_add_header(env, "host", g->server_hostname);
     g->op = h2conn_request(g->h2conn, env, HTTP_ENCODE_RAW, emptystream);
     h2op_register_callback(g->op, probe_cb);
     return true;
@@ -263,11 +264,11 @@ int main(int argc, const char *const *argv)
         fstrace_close(trace);
         return EXIT_FAILURE;
     }
-    const char *server_hostname = argv[i++];
+    g.server_hostname = argv[i++];
     int port = atoi(argv[i++]);
     struct sockaddr *address;
     socklen_t addrlen;
-    if (!resolve_address(server_hostname, port,
+    if (!resolve_address(g.server_hostname, port,
                          &address, &addrlen)) {
         fstrace_close(trace);
         return EXIT_FAILURE;
@@ -284,7 +285,7 @@ int main(int argc, const char *const *argv)
     }
     g.tls_conn = open_tls_client(g.async, tcp_get_input_stream(g.tcp_conn),
                                  pem_file_pathname, pem_dir_pathname,
-                                 server_hostname);
+                                 g.server_hostname);
     tls_allow_protocols(g.tls_conn, "h2", "http/1.1", (const char *) NULL);
     tcp_set_output_stream(g.tcp_conn,
                           tls_get_encrypted_output_stream(g.tls_conn));
