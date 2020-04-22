@@ -813,6 +813,38 @@ static bool op_is_client(h2op_t *op)
     return conn_is_client(op->conn);
 }
 
+FSTRACE_DECL(ASYNCHTTP_H2C_HEADER, "OPID=%s NAME=%s VALUE=%s");
+
+static void trace_headers(h2op_t *op, const http_env_t *envelope)
+{
+    if (!FSTRACE_ENABLED(ASYNCHTTP_H2C_HEADER))
+        return;
+    http_env_iter_t *iter = NULL;
+    for (;;) {
+        const char *field, *value;
+        iter = http_env_get_next_header(envelope, iter, &field, &value);
+        if (!iter)
+            break;
+        FSTRACE(ASYNCHTTP_H2C_HEADER, op->opid, field, value);
+    }
+}
+
+FSTRACE_DECL(ASYNCHTTP_H2C_TRAILER, "OPID=%s NAME=%s VALUE=%s");
+
+static void trace_trailers(h2op_t *op, const http_env_t *envelope)
+{
+    if (!FSTRACE_ENABLED(ASYNCHTTP_H2C_TRAILER))
+        return;
+    http_env_iter_t *iter = NULL;
+    for (;;) {
+        const char *field, *value;
+        iter = http_env_get_next_trailer(envelope, iter, &field, &value);
+        if (!iter)
+            break;
+        FSTRACE(ASYNCHTTP_H2C_TRAILER, op->opid, field, value);
+    }
+}
+
 FSTRACE_DECL(ASYNCHTTP_H2C_GOT_BAD_OP_HEADERS, "OPID=%64u/%64u");
 FSTRACE_DECL(ASYNCHTTP_H2C_GOT_STALE_OP_HEADERS, "OPID=%64u/%64u");
 FSTRACE_DECL(ASYNCHTTP_H2C_GOT_RESPONSE_HEADERS, "OPID=%s");
@@ -866,6 +898,7 @@ static void receive_headers(h2conn_t *conn, h2frame_t *frame)
                 return;
             }
             if (frame->headers.end_headers) {
+                trace_trailers(op, op->recv.envelope);
                 set_recv_state(op, RECV_FINISHED);
                 trigger_user(op);
             } else {
@@ -941,6 +974,7 @@ static void receive_continuation(h2conn_t *conn, h2frame_t *frame)
                             &op->recv.env_space_remaining,
                             http_env_add_trailer) &&
                 frame->continuation.end_headers) {
+                trace_trailers(op, op->recv.envelope);
                 set_recv_state(op, RECV_FINISHED);
                 trigger_user(op);
             }
@@ -2200,6 +2234,7 @@ h2op_t *h2conn_request(h2conn_t *conn, const http_env_t *envelope,
     FSTRACE(ASYNCHTTP_H2C_REQUEST, op->opid,
             http_env_get_method(envelope), http_env_get_path(envelope),
             trace_content_length, &content_length);
+    trace_headers(op, envelope);
     adopt(op, NULL, false, DEFAULT_WEIGHT);
     issue_request(op);
     return op;
@@ -2224,6 +2259,7 @@ h2op_t *h2op_request(h2op_t *parent, const http_env_t *envelope,
     FSTRACE(ASYNCHTTP_H2C_REQUEST_DEPENDENT, op->opid, parent->opid,
             http_env_get_method(envelope), http_env_get_path(envelope),
             trace_content_length, &content_length, exclusive, weight);
+    trace_headers(op, envelope);
     adopt(op, parent, exclusive, weight);
     issue_request(op);
     return op;
@@ -2240,6 +2276,7 @@ static void issue_response(h2op_t *op)
 }
 
 FSTRACE_DECL(ASYNCHTTP_H2C_REPLY, "OPID=%s STATUS=%d LENGTH=%I");
+FSTRACE_DECL(ASYNCHTTP_H2C_REPLY_HEADER, "OPID=%s NAME=%s VALUE=%s");
 
 void h2conn_reply(h2op_t *op, const http_env_t *envelope,
                   ssize_t content_length, bytestream_1 content)
@@ -2250,6 +2287,7 @@ void h2conn_reply(h2op_t *op, const http_env_t *envelope,
     assert(http_env_get_type(envelope) == HTTP_ENV_RESPONSE);
     FSTRACE(ASYNCHTTP_H2C_REPLY, op->opid, http_env_get_code(envelope),
             trace_content_length, &content_length);
+    trace_headers(op, envelope);
     set_xmit_state(op, XMIT_SENDING_DATA);
     op->xmit.envelope = envelope;
     switch (content_length) {
@@ -2299,9 +2337,9 @@ static void issue_push(h2op_t *op, const http_env_t *promise)
 }
 
 FSTRACE_DECL(ASYNCHTTP_H2C_PUSH_NOT_ALLOWED, "UID=%64u ERRNO=%e");
-FSTRACE_DECL(ASYNCHTTP_H2C_PUSH,
-             "OPID=%s PARENT=%s METHOD=%s PATH=%s STATUS=%d LENGTH=%I "
-             "EXCL=%b WEIGHT=%u");
+FSTRACE_DECL(ASYNCHTTP_H2C_PUSH_PROMISE,
+             "OPID=%s PARENT=%s METHOD=%s PATH=%s EXCL=%b WEIGHT=%u");
+FSTRACE_DECL(ASYNCHTTP_H2C_PUSH_RESPONSE, "OPID=%s STATUS=%d LENGTH=%I");
 
 h2op_t *h2op_push(h2op_t *parent, const http_env_t *promise,
                   const http_env_t *response,
@@ -2320,10 +2358,13 @@ h2op_t *h2op_push(h2op_t *parent, const http_env_t *promise,
         return NULL;
     }
     h2op_t *op = make_push(conn, response, content_length, content);
-    FSTRACE(ASYNCHTTP_H2C_PUSH, op->opid, parent->opid,
+    FSTRACE(ASYNCHTTP_H2C_PUSH_PROMISE, op->opid, parent->opid,
             http_env_get_method(promise), http_env_get_path(promise),
-            http_env_get_code(response), trace_content_length, &content_length,
             exclusive, weight);
+    trace_headers(op, promise);
+    FSTRACE(ASYNCHTTP_H2C_PUSH_RESPONSE, op->opid, http_env_get_code(response),
+            trace_content_length, &content_length);
+    trace_headers(op, response);
     adopt(op, parent, exclusive, weight);
     issue_push(op, promise);
     issue_response(op);
@@ -2368,6 +2409,7 @@ h2op_t *h2conn_receive_request(h2conn_t *conn, const http_env_t **request)
     FSTRACE(ASYNCHTTP_H2C_RECEIVE_REQUEST, op->opid,
             http_env_get_method(op->recv.envelope),
             http_env_get_path(op->recv.envelope));
+    trace_headers(op, op->recv.envelope);
     *request = op->recv.envelope;
     set_api_state(op, API_ENVELOPE_PASSED);
     return op;
@@ -2423,6 +2465,7 @@ const http_env_t *h2op_receive_response(h2op_t *op)
                 case API_AWAITING_RESPONSE:
                     FSTRACE(ASYNCHTTP_H2C_RECEIVE_RESPONSE, op->opid,
                             http_env_get_code(op->recv.envelope));
+                    trace_headers(op, op->recv.envelope);
                     set_api_state(op, API_ENVELOPE_PASSED);
                     return op->recv.envelope;
                 default:
@@ -2578,8 +2621,8 @@ bool h2op_get_content(h2op_t *op, ssize_t content_length,
 }
 
 FSTRACE_DECL(ASYNCHTTP_H2C_RECEIVE_PROMISE_FAIL, "UID=%64u ERRNO=%e");
-FSTRACE_DECL(ASYNCHTTP_H2C_RECEIVE_PROMISE,
-             "OPID=%s METHOD=%s PATH=%s STATUS=%d");
+FSTRACE_DECL(ASYNCHTTP_H2C_RECEIVE_PROMISE, "OPID=%s STATUS=%d");
+FSTRACE_DECL(ASYNCHTTP_H2C_RECEIVE_PROMISE_RESPONSE, "OPID=%s STATUS=%d");
 
 h2op_t *h2conn_receive_promise(h2conn_t *conn, const http_env_t **promise,
                                const http_env_t **response)
@@ -2606,8 +2649,11 @@ h2op_t *h2conn_receive_promise(h2conn_t *conn, const http_env_t **promise,
     *response = op->recv.envelope;
     FSTRACE(ASYNCHTTP_H2C_RECEIVE_PROMISE, op->opid,
             http_env_get_method(*promise),
-            http_env_get_path(*promise),
+            http_env_get_path(*promise));
+    trace_headers(op, *promise);
+    FSTRACE(ASYNCHTTP_H2C_RECEIVE_PROMISE_RESPONSE, op->opid,
             http_env_get_code(*response));
+    trace_headers(op, *response);
     set_api_state(op, API_ENVELOPE_PASSED);
     return op;
 }
