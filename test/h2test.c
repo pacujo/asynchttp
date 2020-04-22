@@ -9,16 +9,10 @@
 #include <fsdyn/fsalloc.h>
 #include <fstrace.h>
 #include <async/async.h>
-#include <async/stringstream.h>
-#include <async/blobstream.h>
-#include <async/queuestream.h>
 #include <async/emptystream.h>
 #include <async/tls_connection.h>
 #include <async/tcp_connection.h>
 #include <asynchttp/h2connection.h>
-#include <asynchttp/h2frame_decoder.h>
-#include <asynchttp/h2frame_yield.h>
-#include <asynchttp/h2frame_constants.h>
 
 typedef enum {
     PERFORMING_HANDSHAKE,
@@ -31,6 +25,7 @@ typedef enum {
 typedef struct {
     async_t *async;
     const char *server_hostname;
+    bool print_it;
     tcp_conn_t *tcp_conn;
     tls_conn_t *tls_conn;
     h2conn_t *h2conn;
@@ -110,11 +105,7 @@ static void finish(globals_t *g)
         case PERFORMING_HANDSHAKE:
             tls_close(g->tls_conn);
             break;
-        case QUERYING:
         case DONE:
-#if 0
-            h2frame_decoder_close(g->input);
-#endif
             break;
         case ZOMBIE:
             return;
@@ -150,6 +141,7 @@ static bool handshake(globals_t *g)
                                 h2conn_get_output_stream(g->h2conn));
     http_env_t *env = make_http_env_request("GET", "/", "");
     http_env_add_header(env, "host", g->server_hostname);
+    http_env_add_header(env, "user-agent", "h2test");
     g->op = h2conn_request(g->h2conn, env, HTTP_ENCODE_RAW, emptystream);
     h2op_register_callback(g->op, probe_cb);
     return true;
@@ -159,7 +151,8 @@ static bool query(globals_t *g)
 {
     g->resp_env = h2op_receive_response(g->op);
     if (!g->resp_env) {
-        perror("h2test");
+        if (errno != EAGAIN)
+            perror("h2test");
         return false;
     }
     if (!h2op_get_content(g->op, HTTP_DECODE_OBEY_HEADER, &g->resp_data)) {
@@ -174,21 +167,24 @@ static bool query(globals_t *g)
 
 static bool myread(globals_t *g)
 {
-    uint8_t buffer[100];
+    uint8_t buffer[5000];
     ssize_t count = bytestream_1_read(g->resp_data, buffer, sizeof buffer);
     if (count < 0) {
-        perror("h2test");
+        if (errno != EAGAIN)
+            perror("h2test");
         return false;
     }
     if (count == 0) {
         bytestream_1_close(g->resp_data);
-        printf("exhausted\n");
         h2op_close(g->op);
         h2conn_close(g->h2conn);
+        tls_close(g->tls_conn);
         g->state = DONE;
         return true;
     }
-    printf("----> %d\n", (int) count);
+    if (g->print_it)
+        write(1, buffer, count);
+    else printf("----> %d\n", (int) count);
     return true;
 }
 
@@ -209,7 +205,8 @@ static void myprobe(globals_t *g)
                     return;
                 break;
             case DONE:
-                exit(0);
+                async_execute(g->async, (action_1) { g, (act_1) finish });
+                return;
             default:
                 return;
         }
@@ -217,7 +214,7 @@ static void myprobe(globals_t *g)
 }
 
 static fstrace_t *set_up_tracing(const char *trace_include,
-                           const char *trace_exclude)
+                                 const char *trace_exclude)
 {
     fstrace_t *trace = fstrace_direct(stderr);
     fstrace_declare_globals(trace);
@@ -228,48 +225,76 @@ static fstrace_t *set_up_tracing(const char *trace_include,
     return trace;
 }
 
-static void usage()
+static void bad_usage()
 {
-    fprintf(stderr,
-            "Usage: h2test [ --file pem-file | --dir pem-dir ] host port\n");
+    fprintf(stderr, "Usage: h2test [ OPTIONS ] host port\n");
+    exit(1);
+}
+
+static void parse_cmdline(int argc, const char *const argv[],
+                          const char **pem_file, const char **pem_dir,
+                          bool *print_it,
+                          const char **trace_include,
+                          const char **trace_exclude,
+                          const char **host, int *port)
+{
+    *pem_file = NULL;
+    *pem_dir = NULL;
+    *print_it = false;
+    *trace_include = NULL;
+    *trace_exclude = NULL;
+    int i = 1;
+    while (i < argc && argv[i][0] == '-') {
+        if (!strcmp(argv[i], "--pem-file")) {
+            if (++i >= argc)
+                bad_usage();
+            *pem_file = argv[i++];
+            continue;
+        }
+        if (!strcmp(argv[i], "--pem-dir")) {
+            if (++i >= argc)
+                bad_usage();
+            *pem_dir = argv[i++];
+            continue;
+        }
+        if (!strcmp(argv[i], "--print")) {
+            *print_it = true;
+            i++;
+            continue;
+        }
+        if (!strcmp(argv[i], "--trace-include")) {
+            if (++i >= argc)
+                bad_usage();
+            *trace_include = argv[i++];
+            continue;
+        }
+        if (!strcmp(argv[i], "--trace-exclude")) {
+            if (++i >= argc)
+                bad_usage();
+            *trace_exclude = argv[i++];
+            continue;
+        }
+        bad_usage();
+    }
+    if (i > argc - 2)
+        bad_usage();
+    *host = argv[i++];
+    *port = atoi(argv[i++]);
 }
 
 int main(int argc, const char *const *argv)
 {
-    if (argc < 3) {
-        usage();
-        return EXIT_FAILURE;
-    }
-
-    static const char *trace_include = "ASYNCHTTP-H2";
-    //static const char *trace_include = NULL;
-    fstrace_t *trace = set_up_tracing(trace_include, NULL);
-    if (!trace) {
-        return EXIT_FAILURE;
-    }
-
     globals_t g;
-    const char *pem_file_pathname = NULL;
-    const char *pem_dir_pathname = NULL;
-    int i = 1;
-    if (!strcmp(argv[i], "--file")) {
-        i++;
-        pem_file_pathname = argv[i++];
-    } else if (!strcmp(argv[i], "--dir")) {
-        i++;
-        pem_dir_pathname = argv[i++];
-    }
-    if (i + 2 > argc) {
-        usage();
-        fstrace_close(trace);
+    const char *pem_file, *pem_dir, *trace_include, *trace_exclude;
+    int port;
+    parse_cmdline(argc, argv, &pem_file, &pem_dir, &g.print_it,
+                  &trace_include, &trace_exclude, &g.server_hostname, &port);
+    fstrace_t *trace = set_up_tracing(trace_include, trace_exclude);
+    if (!trace)
         return EXIT_FAILURE;
-    }
-    g.server_hostname = argv[i++];
-    int port = atoi(argv[i++]);
     struct sockaddr *address;
     socklen_t addrlen;
-    if (!resolve_address(g.server_hostname, port,
-                         &address, &addrlen)) {
+    if (!resolve_address(g.server_hostname, port, &address, &addrlen)) {
         fstrace_close(trace);
         return EXIT_FAILURE;
     }
@@ -284,8 +309,7 @@ int main(int argc, const char *const *argv)
         return EXIT_FAILURE;
     }
     g.tls_conn = open_tls_client(g.async, tcp_get_input_stream(g.tcp_conn),
-                                 pem_file_pathname, pem_dir_pathname,
-                                 g.server_hostname);
+                                 pem_file, pem_dir, g.server_hostname);
     tls_allow_protocols(g.tls_conn, "h2", "http/1.1", (const char *) NULL);
     tcp_set_output_stream(g.tcp_conn,
                           tls_get_encrypted_output_stream(g.tls_conn));
