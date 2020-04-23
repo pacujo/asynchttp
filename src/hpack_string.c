@@ -11,7 +11,7 @@ typedef struct {
     unsigned bit_width;
 } huffman_coding_t;
 
-#include "huffman_tables.c"
+#include "huffman_tables.gen"
 static const huffman_coding_t HUFFMAN_EOS = { 0x3fffffff, 30 };
 
 static size_t huffman_encoding_size(const char *s)

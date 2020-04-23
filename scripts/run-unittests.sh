@@ -73,7 +73,7 @@ run-tests () {
     echo
     echo "Run unit tests on $arch"
     echo
-    stage/$arch/build/test/fstracecheck
+    stage/$arch/build/test/fstracecheck $arch
     run-test $arch ./stage/$arch/build/test/jsonop-request-quick-close
     test-client-system-bundle $arch
     test-client-file-bundle $arch

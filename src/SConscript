@@ -14,7 +14,7 @@ env['CPPPATH'] = [
 
 env.ParseConfig(env['CONFIG_PARSER'])
 
-env.Command('huffman_tables.c',
+env.Command('huffman_tables.gen',
             'gen_huffman.py',
             """$SOURCE >$TARGET""")
 
