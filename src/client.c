@@ -26,6 +26,7 @@ typedef enum {
 } proxy_mode_t;
 
 struct http_client {
+    bool closed;
     async_t *async;
     uint64_t uid;
     fsadns_t *dns;
@@ -66,6 +67,7 @@ typedef enum {
     HTTP_OP_RECEIVED,
     HTTP_OP_STREAMING,
     HTTP_OP_STREAM_CLOSED,
+    HTTP_OP_CLOSED_STREAMING,
     HTTP_OP_CLOSED
 } http_op_state_t;
 
@@ -88,13 +90,10 @@ typedef enum {
  *                 RECEIVED
  *                    |
  *                    v
- *                STREAMING
- *                    |
- *                    v
- *              STREAM_CLOSED
- *                    |
- *                    v
- *                  CLOSED
+ *                STREAMING ----> CLOSED_STREAMING
+ *                    |                   |
+ *                    v                   v
+ *              STREAM_CLOSED -------> CLOSED
  */
 
 struct http_op {
@@ -127,10 +126,11 @@ struct http_op {
     switchstream_t *input_swstr;
     switchstream_t *output_swstr;
 
-    /* HTTP_OP_TUNNELING, HTTP_OP_SENT, HTTP_OP_RECEIVED, HTTP_OP_STREAMING */
+    /* HTTP_OP_TUNNELING, HTTP_OP_SENT, HTTP_OP_RECEIVED,
+     * HTTP_OP_STREAMING, HTTP_OP_CLOSED_STREAMING */
     protocol_stack_t stack;
 
-    /* HTTP_OP_STREAMING */
+    /* HTTP_OP_STREAMING, HTTP_OP_CLOSED_STREAMING */
     bytestream_1 response_content;
 };
 
@@ -139,6 +139,7 @@ FSTRACE_DECL(ASYNCHTTP_CLIENT_CREATE, "UID=%64u PTR=%p ASYNC=%p");
 http_client_t *open_http_client_2(async_t *async, fsadns_t *dns)
 {
     http_client_t *client = fsalloc(sizeof *client);
+    client->closed = false;
     client->async = async;
     client->dns = dns;
     client->uid = fstrace_get_unique_id();
@@ -196,24 +197,28 @@ static void prevent_recycling_of_ops_in_flight(http_client_t *client)
     }
 }
 
-FSTRACE_DECL(ASYNCHTTP_CLIENT_CLOSE, "UID=%64u");
-
-void http_client_close(http_client_t *client)
+static void check_pulse(http_client_t *client)
 {
-    FSTRACE(ASYNCHTTP_CLIENT_CLOSE, client->uid);
-    assert(client->async);
-    while (!list_empty(client->operations)) {
-        http_op_t *op = (http_op_t *)
-            list_elem_get_value(list_get_first(client->operations));
-        http_op_close(op);
-    }
+    if (!client->closed)
+        return;
+    if (!list_empty(client->operations))
+        return;
     destroy_list(client->operations);
     flush_free_conn_pool(client);
     destroy_list(client->free_conn_pool);
     fsfree(client->proxy_host);
     destroy_tls_ca_bundle(client->ca_bundle);
     async_wound(client->async, client);
-    client->async = NULL;
+}
+
+FSTRACE_DECL(ASYNCHTTP_CLIENT_CLOSE, "UID=%64u");
+
+void http_client_close(http_client_t *client)
+{
+    FSTRACE(ASYNCHTTP_CLIENT_CLOSE, client->uid);
+    assert(!client->closed);
+    client->closed = true;
+    check_pulse(client);
 }
 
 FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_MAX_ENVELOPE_SIZE, "UID=%64u SIZE=%z");
@@ -403,6 +408,8 @@ static const char *trace_state(void *pstate)
             return "HTTP_OP_STREAMING";
         case HTTP_OP_STREAM_CLOSED:
             return "HTTP_OP_STREAM_CLOSED";
+        case HTTP_OP_CLOSED_STREAMING:
+            return "HTTP_OP_CLOSED_STREAMING";
         case HTTP_OP_CLOSED:
             return "HTTP_OP_CLOSED";
         default:
@@ -819,14 +826,30 @@ static void move_connection_to_pool(http_op_t *op)
 
 FSTRACE_DECL(ASYNCHTTP_OP_RESPONSE_CLOSED, "UID=%64u");
 
+static void do_close(http_op_t *op);
+
 static void response_closed(http_op_t *op)
 {
-    assert(op->state == HTTP_OP_STREAMING);
+    if (op->state == HTTP_OP_CLOSED)
+        return;
     FSTRACE(ASYNCHTTP_OP_RESPONSE_CLOSED, op->uid);
-    if (op->recycle_connection)
-        move_connection_to_pool(op);
-    else close_stack(op->stack);
-    set_op_state(op, HTTP_OP_STREAM_CLOSED);
+    switch (op->state) {
+        case HTTP_OP_STREAMING:
+            if (op->recycle_connection)
+                move_connection_to_pool(op);
+            else close_stack(op->stack);
+            set_op_state(op, HTTP_OP_STREAM_CLOSED);
+            break;
+        case HTTP_OP_CLOSED_STREAMING:
+            if (op->recycle_connection)
+                move_connection_to_pool(op);
+            else close_stack(op->stack);
+            set_op_state(op, HTTP_OP_STREAM_CLOSED);
+            do_close(op);
+            break;
+        default:
+            assert(false);
+    }
 }
 
 FSTRACE_DECL(ASYNCHTTP_OP_GET_RESPONSE_CONTENT_FAIL, "UID=%64u ERRNO=%e");
@@ -857,7 +880,7 @@ int http_op_get_response_content(http_op_t *op, bytestream_1 *content)
     }
     action_1 farewell_cb = { op, (act_1) response_closed };
     farewellstream_t *fwstr =
-        open_farewellstream(op->client->async, stream, farewell_cb);
+        open_relaxed_farewellstream(op->client->async, stream, farewell_cb);
     *content = op->response_content = farewellstream_as_bytestream_1(fwstr);
     FSTRACE(ASYNCHTTP_OP_GET_RESPONSE_CONTENT, op->uid, content->obj);
     set_op_state(op, HTTP_OP_STREAMING);
@@ -886,25 +909,8 @@ static void clear_request(http_op_t *op)
     bytestream_1_close(op->request_content);
 }
 
-FSTRACE_DECL(ASYNCHTTP_OP_CLOSE, "UID=%64u");
-
-void http_op_close(http_op_t *op)
+static void do_close(http_op_t *op)
 {
-    switch (op->state) {
-        case HTTP_OP_CLOSED:
-            return;
-        case HTTP_OP_STREAMING:
-            /* The application didn't close. That's ok; we'll do it
-             * here. Closing the response content electrically triggers
-             * the response_closed callback above and the associated
-             * state transition to HTTP_OP_STREAM_CLOSED. */
-            bytestream_1_close(op->response_content);
-            assert(op->state == HTTP_OP_STREAM_CLOSED);
-            break;
-        default:
-            ;
-    }
-    FSTRACE(ASYNCHTTP_OP_CLOSE, op->uid);
     list_remove(op->client->operations, op->loc);
     fsfree(op->proxy_host);
     fsfree(op->host_entry);
@@ -936,4 +942,22 @@ void http_op_close(http_op_t *op)
     destroy_tls_ca_bundle(op->ca_bundle);
     set_op_state(op, HTTP_OP_CLOSED);
     async_wound(op->client->async, op);
+    check_pulse(op->client);
+}
+
+FSTRACE_DECL(ASYNCHTTP_OP_CLOSE, "UID=%64u");
+
+void http_op_close(http_op_t *op)
+{
+    FSTRACE(ASYNCHTTP_OP_CLOSE, op->uid);
+    switch (op->state) {
+        case HTTP_OP_CLOSED:
+        case HTTP_OP_CLOSED_STREAMING:
+            assert(false);
+        case HTTP_OP_STREAMING:
+            set_op_state(op, HTTP_OP_CLOSED_STREAMING);
+            return;
+        default:
+            do_close(op);
+    }
 }

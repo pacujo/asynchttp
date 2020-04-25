@@ -70,6 +70,7 @@ static void probe_content(globals_t *g)
             break;
         }
     }
+    bytestream_1_close(g->content);
     http_op_close(g->request);
     if (g->success && g->spam >= 0)
         async_timer_start(g->async, async_now(g->async) + g->spam,

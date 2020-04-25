@@ -19,6 +19,9 @@ http_client_t *open_http_client_2(async_t *async, fsadns_t *dns);
 
 /* Equivalent to open_http_client_2(async, NULL). */
 http_client_t *open_http_client(async_t *async);
+
+/* A client can be closed before the operations are closed, but the
+ * operations must be closed separately. */
 void http_client_close(http_client_t *client);
 
 /* Set the maximum size for the response headers accepted from the
@@ -108,7 +111,9 @@ int http_op_get_response_content(http_op_t *op, bytestream_1 *content);
 void http_op_register_callback(http_op_t *op, action_1 action);
 void http_op_unregister_callback(http_op_t *op);
 
-/* An operation can be closed before it has been received. */
+/* An operation can be closed before it has been received. If
+ * http_op_receive_response() has returned content, it must be closed
+ * separately. */
 void http_op_close(http_op_t *op);
 
 #ifdef __cplusplus
