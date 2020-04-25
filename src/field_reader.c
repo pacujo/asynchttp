@@ -2,8 +2,8 @@
 #include <errno.h>
 #include <assert.h>
 #include <fstrace.h>
+#include <fsdyn/bytearray.h>
 #include <fsdyn/fsalloc.h>
-#include <fsdyn/list.h>
 #include <async/bytestream_1.h>
 #include "field_reader.h"
 #include "asynchttp_version.h"
@@ -22,17 +22,11 @@ typedef enum {
     FIELD_READER_UNAVAILABLE
 } field_reader_state_t;
 
-typedef struct {
-    char *text;
-    size_t size;
-} snippet_t;
-
 struct field_reader {
     uint64_t uid;
     field_reader_state_t state;
     bytestream_1 stream;
-    size_t total_size, max_size;
-    list_t *snippets;           /* of http_decoder_snippet */
+    byte_array_t *buffer;
     char tail[2000], *end_of_fields, *end_of_leftovers;
 };
 
@@ -47,9 +41,7 @@ field_reader_t *make_field_reader(bytestream_1 stream, size_t max_size)
             reader->uid, reader, stream.obj, max_size);
     reader->state = FIELD_READER_AT_START;
     reader->stream = stream;
-    reader->total_size = 0;
-    reader->max_size = max_size;
-    reader->snippets = make_list();
+    reader->buffer = make_byte_array(max_size);
     return reader;
 }
 
@@ -58,12 +50,7 @@ FSTRACE_DECL(ASYNCHTTP_FIELD_READER_CLOSE, "UID=%64u");
 void field_reader_close(field_reader_t *reader)
 {
     FSTRACE(ASYNCHTTP_FIELD_READER_CLOSE, reader->uid);
-    while (!list_empty(reader->snippets)) {
-        snippet_t *snippet = (snippet_t *) list_pop_first(reader->snippets);
-        fsfree(snippet->text);
-        fsfree(snippet);
-    }
-    destroy_list(reader->snippets);
+    destroy_byte_array(reader->buffer);
     fsfree(reader);
 }
 
@@ -144,6 +131,14 @@ int field_reader_read(field_reader_t *reader)
                     switch (reader->state) {
                         case FIELD_READER_AT_START:
                         case FIELD_READER_AFTER_CR:
+                            if (!byte_array_append(reader->buffer,
+                                                   reader->tail,
+                                                   i + 1)) {
+                                set_reader_state(reader,
+                                                 FIELD_READER_UNAVAILABLE);
+                                protocol_violation();
+                                return -1;
+                            }
                             set_reader_state(reader, FIELD_READER_AVAILABLE);
                             reader->end_of_fields = reader->tail + i + 1;
                             reader->end_of_leftovers = reader->tail + count;
@@ -155,13 +150,7 @@ int field_reader_read(field_reader_t *reader)
                 default:
                     set_reader_state(reader, FIELD_READER_IN_MIDDLE);
             }
-        snippet_t *snippet = fsalloc(sizeof *snippet);
-        snippet->text = fsalloc(count);
-        memcpy(snippet->text, reader->tail, count);
-        snippet->size = count;
-        list_append(reader->snippets, snippet);
-        reader->total_size += count;
-        if (reader->total_size > reader->max_size) {
+        if (!byte_array_append(reader->buffer, reader->tail, count)) {
             set_reader_state(reader, FIELD_READER_UNAVAILABLE);
             protocol_violation();
             return -1;
@@ -169,26 +158,16 @@ int field_reader_read(field_reader_t *reader)
     }
 }
 
-FSTRACE_DECL(ASYNCHTTP_FIELD_READER_COMBINE, "UID=%64u SNIPPETS=%z BYTES=%z");
+FSTRACE_DECL(ASYNCHTTP_FIELD_READER_COMBINE, "UID=%64u BYTES=%z");
 
 char *field_reader_combine(field_reader_t *reader, const char **end)
 {
     assert(reader->state == FIELD_READER_AVAILABLE);
-    size_t suffix_size = reader->end_of_fields - reader->tail;
-    size_t buffer_size = reader->total_size + suffix_size;
+    size_t buffer_size = byte_array_size(reader->buffer);
     char *buffer = fsalloc(buffer_size);
-    char *p = buffer;
-    list_elem_t *e;
-    for (e = list_get_first(reader->snippets); e; e = list_next(e)) {
-        snippet_t *snippet = (snippet_t *) list_elem_get_value(e);
-        memcpy(p, snippet->text, snippet->size);
-        p += snippet->size;
-    }
-    memcpy(p, reader->tail, suffix_size);
+    memcpy(buffer, byte_array_data(reader->buffer), buffer_size);
     *end = buffer + buffer_size;
-    FSTRACE(ASYNCHTTP_FIELD_READER_COMBINE, reader->uid,
-            list_size(reader->snippets) + 1, /* + 1 for the suffix */
-            (ssize_t)(p + suffix_size - buffer));
+    FSTRACE(ASYNCHTTP_FIELD_READER_COMBINE, reader->uid, buffer_size);
     return buffer;
 }
 
