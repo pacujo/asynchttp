@@ -6,6 +6,7 @@
 #include <fsdyn/fsalloc.h>
 #include <fsdyn/charstr.h>
 #include <fsdyn/list.h>
+#include <async/drystream.h>
 #include <async/emptystream.h>
 #include <async/farewellstream.h>
 #include <async/switchstream.h>
@@ -13,6 +14,7 @@
 #include <async/tls_connection.h>
 #include <nwutil.h>
 #include "client.h"
+#include "h2connection.h"
 #include "asynchttp_version.h"
 
 enum {
@@ -41,8 +43,19 @@ struct http_client {
 };
 
 typedef struct {
+    /* http_conn is NULL TLS protocol negotiation and when h2_conn is not */
     http_conn_t *http_conn;
+
+    /* swstr is non-NULL in non-tunneling proxy connections */
+    switchstream_t *swstr;
+
+    /* h2_conn is NULL TLS protocol negotiation and when http_conn is not */
+    h2conn_t *h2conn;
+
+    /* tls_conn is NULL when plain TCP is used for transport */
     tls_conn_t *tls_conn;
+
+    /* never NULL */
     tcp_conn_t *tcp_conn;
 } protocol_stack_t;
 
@@ -60,9 +73,10 @@ typedef struct {
 
 typedef enum {
     HTTP_OP_IDLE,
-    HTTP_OP_CONNECTING_DIRECTLY,
-    HTTP_OP_CONNECTING_TO_PROXY,
-    HTTP_OP_TUNNELING,
+    HTTP_OP_CONNECTING_DIRECTLY, /* establishing TCP connection to server */
+    HTTP_OP_CONNECTING_TO_PROXY, /* establishing TCP connection to proxy */
+    HTTP_OP_TUNNELING,           /* HTTPS via proxy; CONNECT sent */
+    HTTP_OP_NEGOTIATING,         /* HTTPS protocol version negotiation */
     HTTP_OP_SENT,
     HTTP_OP_RECEIVED,
     HTTP_OP_STREAMING,
@@ -80,9 +94,13 @@ typedef enum {
  *          |                     |
  *          v                     v
  *   CONNECTING_TO_PROXY  CONNECTING_DIRECTLY
+ *          |         |     |     |
+ *          |         V     |     |
+ *          |     TUNNELING |     |
+ *          |         |     |     |
+ *          |         v     v     |
+ *          |       NEGOTIATING   |
  *          |         |           |
- *          v         |           |
- *      TUNNELING     |           |
  *          |         v           |
  *          +------> SENT <-------+
  *                    |
@@ -122,13 +140,12 @@ struct http_op {
     /* HTTP_OP_CONNECTING_DIRECTLY, HTTP_OP_CONNECTING_TO_PROXY */
     tcp_client_t *tcp_client;
 
-    /* HTTP_OP_TUNNELING */
-    switchstream_t *input_swstr;
-    switchstream_t *output_swstr;
-
-    /* HTTP_OP_TUNNELING, HTTP_OP_SENT, HTTP_OP_RECEIVED,
+    /* HTTP_OP_TUNNELING, HTTP_OP_NEGOTIATING, HTTP_OP_SENT, HTTP_OP_RECEIVED,
      * HTTP_OP_STREAMING, HTTP_OP_CLOSED_STREAMING */
     protocol_stack_t stack;
+
+    /* HTTP_OP_SENT, HTTP_OP_RECEIVED */
+    h2op_t *h2op;
 
     /* HTTP_OP_STREAMING, HTTP_OP_CLOSED_STREAMING */
     bytestream_1 response_content;
@@ -175,7 +192,10 @@ static void close_stack(protocol_stack_t stack)
     tcp_close(stack.tcp_conn);
     if (stack.tls_conn)
         tls_close(stack.tls_conn);
-    http_close(stack.http_conn);
+    if (stack.h2conn)
+        h2conn_close(stack.h2conn);
+    if (stack.http_conn)
+        http_close(stack.http_conn);
 }
 
 static void flush_free_conn_pool(http_client_t *client)
@@ -400,6 +420,8 @@ static const char *trace_state(void *pstate)
             return "HTTP_OP_CONNECTING_TO_PROXY";
         case HTTP_OP_TUNNELING:
             return "HTTP_OP_TUNNELING";
+        case HTTP_OP_NEGOTIATING:
+            return "HTTP_OP_NEGOTIATING";
         case HTTP_OP_SENT:
             return "HTTP_OP_SENT";
         case HTTP_OP_RECEIVED:
@@ -563,6 +585,19 @@ static bool reuse_connection(http_op_t *op,
     return false;
 }
 
+FSTRACE_DECL(ASYNCHTTP_OP_PROBE, "UID=%64u");
+
+static void op_probe(http_op_t *op)
+{
+    FSTRACE(ASYNCHTTP_OP_PROBE, op->uid);
+    action_1_perf(op->callback);
+}
+
+static action_1 get_op_cb(http_op_t *op)
+{
+    return (action_1) { op, (act_1) op_probe };
+}
+
 static void op_dispatch(http_op_t *op)
 {
     action_1 request_closed_cb = { op->request, (act_1) destroy_http_env };
@@ -570,7 +605,13 @@ static void op_dispatch(http_op_t *op)
         open_relaxed_farewellstream(op->client->async, op->request_content,
                                     request_closed_cb);
     bytestream_1 content = farewellstream_as_bytestream_1(fwstr);
-    http_send(op->stack.http_conn, op->request, op->content_length, content);
+    if (op->stack.h2conn) {
+        op->h2op = h2conn_request(op->stack.h2conn, op->request,
+                                  op->content_length, content);
+        h2op_register_callback(op->h2op, get_op_cb(op));
+        
+    } else http_send(op->stack.http_conn, op->request,
+                     op->content_length, content);
     set_op_state(op, HTTP_OP_SENT);
 }
 
@@ -586,11 +627,6 @@ static void op_send_http_connect(http_op_t *op)
     bytestream_1 content = farewellstream_as_bytestream_1(fwstr);
     http_send(op->stack.http_conn, connect_request, HTTP_ENCODE_RAW, content);
     set_op_state(op, HTTP_OP_TUNNELING);
-}
-
-static void op_probe(http_op_t *op)
-{
-    action_1_perf(op->callback);
 }
 
 FSTRACE_DECL(ASYNCHTTP_OP_SEND_VIA_PROXY_REUSE_HTTPS, "UID=%64u");
@@ -615,8 +651,7 @@ static void op_send_request_via_proxy(http_op_t *op)
     op->tcp_client =
         open_tcp_client_2(op->client->async, op->proxy_host, op->proxy_port,
                           op->client->dns);
-    action_1 probe_cb = { op, (act_1) op_probe };
-    tcp_client_register_callback(op->tcp_client, probe_cb);
+    tcp_client_register_callback(op->tcp_client, get_op_cb(op));
     set_op_state(op, HTTP_OP_CONNECTING_TO_PROXY);
 }
 
@@ -639,15 +674,14 @@ static void op_send_request(http_op_t *op)
     op->tcp_client =
         open_tcp_client_2(op->client->async, op->host, op->port,
                           op->client->dns);
-    action_1 probe_cb = { op, (act_1) op_probe };
-    tcp_client_register_callback(op->tcp_client, probe_cb);
+    tcp_client_register_callback(op->tcp_client, get_op_cb(op));
     set_op_state(op, HTTP_OP_CONNECTING_DIRECTLY);
 }
 
 FSTRACE_DECL(ASYNCHTTP_OP_ESTABLISH_FAIL, "UID=%64u ERRNO=%e");
-FSTRACE_DECL(ASYNCHTTP_OP_ESTABLISH, "UID=%64u TCP-CONN=%p CONN=%p");
+FSTRACE_DECL(ASYNCHTTP_OP_ESTABLISH, "UID=%64u TCP-CONN=%p");
 
-static bool op_build_http_stack(http_op_t *op)
+static bool op_init_protocol_stack(http_op_t *op)
 {
     op->stack.tcp_conn = tcp_client_establish(op->tcp_client);
     if (!op->stack.tcp_conn) {
@@ -655,47 +689,31 @@ static bool op_build_http_stack(http_op_t *op)
         return false;
     }
     tcp_client_close(op->tcp_client);
-    op->input_swstr =
-        open_switch_stream(op->client->async,
-                           tcp_get_input_stream(op->stack.tcp_conn));
-    bytestream_1 http_input = switchstream_as_bytestream_1(op->input_swstr);
     op->stack.tls_conn = NULL;
-    op->stack.http_conn = open_http_connection(op->client->async, http_input,
-                                               op->client->max_envelope_size);
-    action_1 probe_cb = { op, (act_1) op_probe };
-    http_register_callback(op->stack.http_conn, probe_cb);
-    op->output_swstr =
-        open_switch_stream(op->client->async,
-                           http_get_output_stream(op->stack.http_conn));
-    bytestream_1 tcp_output = switchstream_as_bytestream_1(op->output_swstr);
-    tcp_set_output_stream(op->stack.tcp_conn, tcp_output);
-    FSTRACE(ASYNCHTTP_OP_ESTABLISH, op->uid, op->stack.tcp_conn,
-            op->stack.http_conn);
+    op->stack.swstr = NULL;
+    op->stack.http_conn = NULL;
+    op->stack.h2conn = NULL;
+    FSTRACE(ASYNCHTTP_OP_ESTABLISH, op->uid, op->stack.tcp_conn);
     return true;
 }
 
 static const http_env_t *op_receive_via_proxy(http_op_t *op)
 {
-    if (!op_build_http_stack(op))
+    if (!op_init_protocol_stack(op))
         return NULL;
+    op->stack.swstr =
+        open_switch_stream(op->client->async,
+                           tcp_get_input_stream(op->stack.tcp_conn));
+    bytestream_1 http_input = switchstream_as_bytestream_1(op->stack.swstr);
+    op->stack.http_conn = open_http_connection(op->client->async, http_input,
+                                               op->client->max_envelope_size);
+    bytestream_1 http_output = http_get_output_stream(op->stack.http_conn);
+    tcp_set_output_stream(op->stack.tcp_conn, http_output);
+    http_register_callback(op->stack.http_conn, get_op_cb(op));
     if (op->https)
         op_send_http_connect(op);
     else op_dispatch(op);
     return http_op_receive_response(op);
-}
-
-static void op_wrap_tls(http_op_t *op)
-{
-    op->stack.tls_conn =
-        open_tls_client_2(op->client->async,
-                          tcp_get_input_stream(op->stack.tcp_conn),
-                          op->ca_bundle, op->host);
-    tls_set_plain_output_stream(op->stack.tls_conn,
-                                http_get_output_stream(op->stack.http_conn));
-    switchstream_reattach(op->output_swstr,
-                          tls_get_encrypted_output_stream(op->stack.tls_conn));
-    switchstream_reattach(op->input_swstr,
-                          tls_get_plain_input_stream(op->stack.tls_conn));
 }
 
 FSTRACE_DECL(ASYNCHTTP_OP_RECEIVE_RECYCLE, "UID=%64u RECYCLE=%b");
@@ -711,6 +729,20 @@ static void response_received(http_op_t *op, const http_env_t *response)
                          "HTTP/1.1") >= 0 &&
         (!field || strcmp(field, "close"));
     FSTRACE(ASYNCHTTP_OP_RECEIVE_RECYCLE, op->uid, op->recycle_connection);
+}
+
+static void op_push_tls(http_op_t *op)
+{
+    assert(!op->stack.http_conn && !op->stack.h2conn && !op->stack.tls_conn);
+    op->stack.tls_conn =
+        open_tls_client_2(op->client->async,
+                          tcp_get_input_stream(op->stack.tcp_conn),
+                          op->ca_bundle, op->host);
+    tcp_set_output_stream(op->stack.tcp_conn,
+                          tls_get_encrypted_output_stream(op->stack.tls_conn));
+    tls_allow_protocols(op->stack.tls_conn,
+                        "h2", "http/1.1", (const char *) NULL);
+    tls_register_callback(op->stack.tls_conn, get_op_cb(op));
 }
 
 static const http_env_t *op_receive_tunnel(http_op_t *op)
@@ -729,25 +761,101 @@ static const http_env_t *op_receive_tunnel(http_op_t *op)
     int status = http_get_content(op->stack.http_conn, 0, &stream);
     assert(status >= 0);
     bytestream_1_close(stream);
-    op_wrap_tls(op);
+    switchstream_reattach(op->stack.swstr, emptystream);
+    http_close(op->stack.http_conn);
+    op->stack.swstr = NULL;
+    op->stack.http_conn = NULL;
+    tcp_set_output_stream(op->stack.tcp_conn, drystream);
+    op_push_tls(op);
+    set_op_state(op, HTTP_OP_NEGOTIATING);
+    return http_op_receive_response(op);
+}
+
+FSTRACE_DECL(ASYNCHTTP_OP_PUSH_HTTPS_LAYER, "UID=%64u HTTP-CONN=%p");
+
+static void op_push_http_over_tls(http_op_t *op)
+{
+    assert(!op->stack.http_conn && !op->stack.h2conn);
+    bytestream_1 http_input = tls_get_plain_input_stream(op->stack.tls_conn);
+    op->stack.http_conn = open_http_connection(op->client->async, http_input,
+                                               op->client->max_envelope_size);
+    bytestream_1 http_output = http_get_output_stream(op->stack.http_conn);
+    tls_set_plain_output_stream(op->stack.tls_conn, http_output);
+    http_register_callback(op->stack.http_conn, get_op_cb(op));
+    FSTRACE(ASYNCHTTP_OP_PUSH_HTTPS_LAYER, op->uid, op->stack.http_conn);
+}
+
+FSTRACE_DECL(ASYNCHTTP_OP_PUSH_H2LAYER, "UID=%64u H2CONN=%p");
+
+static void op_push_h2_over_tls(http_op_t *op)
+{
+    assert(!op->stack.http_conn && !op->stack.h2conn);
+    bytestream_1 h2input = tls_get_plain_input_stream(op->stack.tls_conn);
+    op->stack.h2conn = open_h2connection(op->client->async, h2input, true,
+                                         op->client->max_envelope_size);
+    bytestream_1 h2output = h2conn_get_output_stream(op->stack.h2conn);
+    tls_set_plain_output_stream(op->stack.tls_conn, h2output);
+    h2conn_register_callback(op->stack.h2conn, get_op_cb(op));
+    FSTRACE(ASYNCHTTP_OP_PUSH_H2LAYER, op->uid, op->stack.h2conn);
+}
+
+FSTRACE_DECL(ASYNCHTTP_OP_NO_PROTO_CHOSEN, "UID=%64u");
+FSTRACE_DECL(ASYNCHTTP_OP_HTTP_1_1_CHOSEN, "UID=%64u");
+FSTRACE_DECL(ASYNCHTTP_OP_H2_CHOSEN, "UID=%64u");
+FSTRACE_DECL(ASYNCHTTP_OP_UNKNOWN_PROTO_CHOSEN, "UID=%64u PROTO=%s");
+
+static const http_env_t *op_receive_negotiate(http_op_t *op)
+{
+    assert(op->https);
+    if (tls_read(op->stack.tls_conn, NULL, 0) < 0)
+        return NULL;
+    const char *chosen = tls_get_chosen_protocol(op->stack.tls_conn);
+    if (!chosen) {
+        FSTRACE(ASYNCHTTP_OP_NO_PROTO_CHOSEN, op->uid);
+        op_push_http_over_tls(op);
+    } else if (!strcmp(chosen, "http/1.1")) {
+        FSTRACE(ASYNCHTTP_OP_HTTP_1_1_CHOSEN, op->uid);
+        op_push_http_over_tls(op);
+    } else if (!strcmp(chosen, "h2")) {
+        FSTRACE(ASYNCHTTP_OP_H2_CHOSEN, op->uid);
+        op_push_h2_over_tls(op);
+    } else {
+        FSTRACE(ASYNCHTTP_OP_UNKNOWN_PROTO_CHOSEN, op->uid, chosen);
+        op_push_http_over_tls(op);
+    }
     op_dispatch(op);
     return http_op_receive_response(op);
 }
 
+FSTRACE_DECL(ASYNCHTTP_OP_PUSH_HTTP_LAYER, "UID=%64u HTTP-CONN=%p");
+
 static const http_env_t *op_receive_from_server(http_op_t *op)
 {
-    if (!op_build_http_stack(op))
+    if (!op_init_protocol_stack(op))
         return NULL;
-    if (op->https)
-        op_wrap_tls(op);
-    op_dispatch(op);
+    if (op->https) {
+        op_push_tls(op);
+        set_op_state(op, HTTP_OP_NEGOTIATING);
+    } else {
+        bytestream_1 http_input = tcp_get_input_stream(op->stack.tcp_conn);
+        op->stack.http_conn =
+            open_http_connection(op->client->async, http_input,
+                                 op->client->max_envelope_size);
+        bytestream_1 http_output = http_get_output_stream(op->stack.http_conn);
+        tcp_set_output_stream(op->stack.tcp_conn, http_output);
+        http_register_callback(op->stack.http_conn, get_op_cb(op));
+        FSTRACE(ASYNCHTTP_OP_PUSH_HTTP_LAYER, op->uid, op->stack.http_conn);
+        op_dispatch(op);
+    }
     return http_op_receive_response(op);
 }
 
 static const http_env_t *op_receive_response(http_op_t *op)
 {
-    const http_env_t *response =
-        http_receive(op->stack.http_conn, HTTP_ENV_RESPONSE);
+    const http_env_t *response;
+    if (op->stack.h2conn)
+        response = h2op_receive_response(op->h2op);
+    else response = http_receive(op->stack.http_conn, HTTP_ENV_RESPONSE);
     if (response)
         response_received(op, response);
     return response;
@@ -756,6 +864,7 @@ static const http_env_t *op_receive_response(http_op_t *op)
 FSTRACE_DECL(ASYNCHTTP_OP_RECEIVE_DIRECTLY, "UID=%64u");
 FSTRACE_DECL(ASYNCHTTP_OP_RECEIVE_VIA_PROXY, "UID=%64u");
 FSTRACE_DECL(ASYNCHTTP_OP_RECEIVE_TUNNELING, "UID=%64u");
+FSTRACE_DECL(ASYNCHTTP_OP_RECEIVE_NEGOTIATING, "UID=%64u");
 FSTRACE_DECL(ASYNCHTTP_OP_RECEIVE_SENT, "UID=%64u");
 FSTRACE_DECL(ASYNCHTTP_OP_RECEIVE_EOF, "UID=%64u");
 FSTRACE_DECL(ASYNCHTTP_OP_RECEIVED, "UID=%64u RESPONSE=%p ERRNO=%e");
@@ -780,6 +889,10 @@ const http_env_t *http_op_receive_response(http_op_t *op)
         case HTTP_OP_TUNNELING:
             FSTRACE(ASYNCHTTP_OP_RECEIVE_TUNNELING, op->uid);
             response = op_receive_tunnel(op);
+            break;
+        case HTTP_OP_NEGOTIATING:
+            FSTRACE(ASYNCHTTP_OP_RECEIVE_NEGOTIATING, op->uid);
+            response = op_receive_negotiate(op);
             break;
         case HTTP_OP_SENT:
             FSTRACE(ASYNCHTTP_OP_RECEIVE_SENT, op->uid);
@@ -861,6 +974,7 @@ int http_op_get_response_content(http_op_t *op, bytestream_1 *content)
         case HTTP_OP_CONNECTING_DIRECTLY:
         case HTTP_OP_CONNECTING_TO_PROXY:
         case HTTP_OP_TUNNELING:
+        case HTTP_OP_NEGOTIATING:
         case HTTP_OP_SENT:
             FSTRACE(ASYNCHTTP_OP_GET_RESPONSE_CONTENT_FAIL, op->uid);
             errno = EAGAIN;
@@ -873,8 +987,14 @@ int http_op_get_response_content(http_op_t *op, bytestream_1 *content)
             ;
     }
     bytestream_1 stream;
-    if (http_get_content(op->stack.http_conn,
-                         HTTP_DECODE_OBEY_HEADER, &stream) < 0) {
+    if (op->stack.h2conn) {
+        if (h2op_get_content(op->h2op,
+                             HTTP_DECODE_OBEY_HEADER, &stream) < 0) {
+            FSTRACE(ASYNCHTTP_OP_GET_RESPONSE_CONTENT_FAIL, op->uid);
+            return -1;
+        }
+    } else if (http_get_content(op->stack.http_conn,
+                                HTTP_DECODE_OBEY_HEADER, &stream) < 0) {
         FSTRACE(ASYNCHTTP_OP_GET_RESPONSE_CONTENT_FAIL, op->uid);
         return -1;
     }
@@ -927,11 +1047,14 @@ static void do_close(http_op_t *op)
             tcp_client_close(op->tcp_client);
             break;
         case HTTP_OP_TUNNELING:
+        case HTTP_OP_NEGOTIATING:
             clear_request(op);
             close_stack(op->stack);
             break;
         case HTTP_OP_SENT:
         case HTTP_OP_RECEIVED:
+            if (op->stack.h2conn)
+                h2op_close(op->h2op);
             close_stack(op->stack);
             break;
         case HTTP_OP_STREAM_CLOSED:

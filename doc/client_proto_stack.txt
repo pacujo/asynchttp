@@ -1,0 +1,78 @@
+http_client_t PROTOCOL STACK
+============================
+
+1. Direct HTTP/1 over TCP
+
+In the classic HTTP/1 over TCP case, an HTTP layer is stacked on top
+of a TCP layer.
+
+          +---------------------------+
+          |        http_conn          |
+          +-----------------------+---+
+              ^                   |
+              |                   v
+          +---+-----------------------+
+          | input : tcp_conn : output |
+          +---------------------------+
+
+
+
+2. Proxy HTTP/1 over TCP
+
+Only plain-HTTP connectivity to a HTTP/1 proxy is supported. An
+intervening switchstream supports switching transports via CONNECT.
+Without the switchstream, closing http_conn would cause tcp_conn input
+to close as well.
+
+          +---------------------------+
+          |        http_conn          |
+          +-----------------------+---+
+              ^                   |
+              |                   |
+          +---+---+               |
+          | swstr |               |
+          +-------+               |
+              ^                   |
+              |                   v
+          +---+-----------------------+
+          | input : tcp_conn : output |
+          +---------------------------+
+
+
+3. TLS Protocol Negotiation
+
+A TLS handshake is initiated including a protocol negotiation:
+
+          +---+-----------------------+
+          | plain :          :  plain |
+          | input :          : output |
+          +-------- tls_conn ---------+
+          | encr  :          :  encr  |
+          | input :          : output |
+          +-----------------------+---+
+              ^                   |
+              |                   v
+          +---+-----------------------+
+          | input : tcp_conn : output |
+          +---------------------------+
+
+
+4. HTTP/x over TLS
+
+          +---------------------------+
+          |     http_conn/h2conn      |
+          +-----------------------+---+
+              ^                   |
+              |                   v
+          +---+-----------------------+
+          | plain :          :  plain |
+          | input :          : output |
+          +-------- tls_conn ---------+
+          | encr  :          :  encr  |
+          | input :          : output |
+          +-----------------------+---+
+              ^                   |
+              |                   v
+          +---+-----------------------+
+          | input : tcp_conn : output |
+          +---------------------------+
