@@ -127,11 +127,12 @@ const http_env_t *h2op_receive_response(h2op_t *op);
  * After 'content' returns an end-of-stream, the dequeued envelope may
  * contain trailer fields.
  *
- * Normally, returns true. If false is returned, errno should be
- * consulted. After true is returned by h2op_get_content(), subsequent
- * calls to the function return false with errno == EAGAIN. */
-bool h2op_get_content(h2op_t *op, ssize_t content_length,
-                      bytestream_1 *content);
+ * Normally, returns a nonnegative value. If a negative number is
+ * returned, errno should be consulted. After a nonnegative value is
+ * returned by h2op_get_content(), subsequent calls to the function
+ * return a negative value with errno == EAGAIN. */
+int h2op_get_content(h2op_t *op, ssize_t content_length,
+                     bytestream_1 *content);
 
 /* Every operation returned by h2conn_request() or h2op_request() must
  * eventually be closed. */

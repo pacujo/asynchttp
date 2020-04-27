@@ -155,7 +155,7 @@ static bool query(globals_t *g)
             perror("h2test");
         return false;
     }
-    if (!h2op_get_content(g->op, HTTP_DECODE_OBEY_HEADER, &g->resp_data)) {
+    if (h2op_get_content(g->op, HTTP_DECODE_OBEY_HEADER, &g->resp_data) < 0) {
         perror("h2test");
         return false;
     }
@@ -326,7 +326,7 @@ int main(int argc, const char *const *argv)
     destroy_async(g.async);
     fstrace_close(trace);
     switch (g.state) {
-        case DONE:
+        case ZOMBIE:
             return EXIT_SUCCESS;
         default:
             return EXIT_FAILURE;

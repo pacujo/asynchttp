@@ -640,7 +640,8 @@ static http_env_t *make_response_headers(h2conn_t *conn, list_t *fields,
                 fsfree(value);
                 return bad_response(conn, env, strings);
             }
-            env = make_http_env_response("HTTP/2", atoi(value), value);
+            /* Use HTTP/1.1 for compatibility */
+            env = make_http_env_response("HTTP/1.1", atoi(value), value);
             fsfree(name);
         } else {
             list_append(strings, name);
@@ -1421,8 +1422,9 @@ static http_env_t *make_request_headers(h2conn_t *conn, list_t *fields,
             if (reqline.scheme && reqline.authority && reqline.path &&
                 reqline.method) {
                 fsfree(reqline.scheme);
+                /* Use HTTP/1.1 for compatibility */
                 env = make_http_env_request(reqline.method, reqline.path,
-                                            "HTTP/2");
+                                            "HTTP/1.1");
                 list_append(strings, charstr_dupstr("host"));
                 list_append(strings, reqline.authority);
             }
@@ -2583,13 +2585,12 @@ static struct bytestream_1_vt h2body_vt = {
 FSTRACE_DECL(ASYNCHTTP_H2C_GET_CONTENT_FAIL, "OPID=%s ERRNO=%e");
 FSTRACE_DECL(ASYNCHTTP_H2C_GET_CONTENT, "OPID=%s LENGTH=%I");
 
-bool h2op_get_content(h2op_t *op, ssize_t content_length,
-                      bytestream_1 *content)
+int h2op_get_content(h2op_t *op, ssize_t content_length, bytestream_1 *content)
 {
     assert(op_is_client(op));
     if (!alive_and_well(op)) {
         FSTRACE(ASYNCHTTP_H2C_GET_CONTENT_FAIL, op->opid);
-        return false;
+        return -1;
     }
     switch (op->recv.state) {
         case RECV_AWAITING_RESPONSE_HEADER:
@@ -2597,7 +2598,7 @@ bool h2op_get_content(h2op_t *op, ssize_t content_length,
         case RECV_AWAITING_FINAL_CONTINUATION_HEADER:
             errno = EAGAIN;
             FSTRACE(ASYNCHTTP_H2C_GET_CONTENT_FAIL, op->opid);
-            return false;
+            return -1;
         case RECV_AWAITING_DATA:
         case RECV_AWAITING_CONTINUATION_TRAILER:
         case RECV_FINISHED:
@@ -2609,11 +2610,11 @@ bool h2op_get_content(h2op_t *op, ssize_t content_length,
                     op->recv.content_callback = NULL_ACTION_1;
                     content->obj = op;
                     content->vt = &h2body_vt;
-                    return true;
+                    return 0;
                 default:
                     errno = EAGAIN;
                     FSTRACE(ASYNCHTTP_H2C_GET_CONTENT_FAIL, op->opid);
-                    return false;
+                    return -1;
             }            
         default:
             assert(false);
