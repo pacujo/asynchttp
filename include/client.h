@@ -82,7 +82,16 @@ http_op_t *http_client_make_request(http_client_t *client,
                                     const char *uri);
 
 /* See http_framer_enqueue() in framer.h for the meaning of
- * content_length. */
+ * content_length. If this function is not called, the default is
+ * equivalent to 
+ *
+ *   http_op_set_content(op, HTTP_ENCODE_RAW, emptystream)
+ *
+ * that is, no request body, no Content-Length header.
+ *
+ * http_op_set_content() must be called before
+ * http_op_receive_response() is called on the operation for the first
+ * time. */
 void http_op_set_content(http_op_t *op, ssize_t content_length,
                          bytestream_1 content);
 
