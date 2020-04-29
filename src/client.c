@@ -1049,6 +1049,20 @@ static const http_env_t *op_receive_response(http_op_t *op)
     return response;
 }
 
+static void taint_maybe(http_op_t *op)
+{
+    switch (errno) {
+        case 0:
+        case EAGAIN:
+            return;
+        default:
+            ;
+    }
+    int err = errno;
+    taint_pool_element(op->pe);
+    errno = err;
+}
+
 FSTRACE_DECL(ASYNCHTTP_OP_RECEIVE_DIRECTLY, "UID=%64u");
 FSTRACE_DECL(ASYNCHTTP_OP_RECEIVE_VIA_PROXY, "UID=%64u");
 FSTRACE_DECL(ASYNCHTTP_OP_RECEIVE_TUNNELING, "UID=%64u");
@@ -1092,6 +1106,8 @@ const http_env_t *http_op_receive_response(http_op_t *op)
             response = NULL;
     }
     FSTRACE(ASYNCHTTP_OP_RECEIVED, op->uid, response);
+    if (!response)
+        taint_maybe(op);
     return response;
 }
 
@@ -1180,12 +1196,12 @@ int http_op_get_response_content(http_op_t *op, bytestream_1 *content)
         case HTTP_OP_TUNNELING:
         case HTTP_OP_NEGOTIATING:
         case HTTP_OP_SENT:
-            FSTRACE(ASYNCHTTP_OP_GET_RESPONSE_CONTENT_FAIL, op->uid);
             errno = EAGAIN;
+            FSTRACE(ASYNCHTTP_OP_GET_RESPONSE_CONTENT_FAIL, op->uid);
             return -1;
         default:
-            FSTRACE(ASYNCHTTP_OP_GET_RESPONSE_CONTENT_FAIL, op->uid);
             errno = 0;          /* pseudo-EOF */
+            FSTRACE(ASYNCHTTP_OP_GET_RESPONSE_CONTENT_FAIL, op->uid);
             return -1;
         case HTTP_OP_RECEIVED:
             ;
@@ -1195,11 +1211,13 @@ int http_op_get_response_content(http_op_t *op, bytestream_1 *content)
         if (h2op_get_content(op->h2op,
                              HTTP_DECODE_OBEY_HEADER, &stream) < 0) {
             FSTRACE(ASYNCHTTP_OP_GET_RESPONSE_CONTENT_FAIL, op->uid);
+            taint_maybe(op);
             return -1;
         }
     } else if (http_get_content(op->pe->http_conn,
                                 HTTP_DECODE_OBEY_HEADER, &stream) < 0) {
         FSTRACE(ASYNCHTTP_OP_GET_RESPONSE_CONTENT_FAIL, op->uid);
+        taint_maybe(op);
         return -1;
     }
     action_1 farewell_cb = { op, (act_1) response_closed };
