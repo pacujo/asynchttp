@@ -112,6 +112,8 @@ static void get_next(globals_t *g)
     g->response_code = -1;
     g->success = false;
     g->request = http_client_make_request(g->client, "GET", g->uri);
+    http_env_add_header(http_op_get_request_envelope(g->request),
+                        "user-agent", "webclient");
     action_1 probe_cb = { g, (act_1) probe_receive };
     http_op_register_callback(g->request, probe_cb);
     async_execute(g->async, probe_cb);
