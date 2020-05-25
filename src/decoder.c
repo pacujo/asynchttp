@@ -25,6 +25,7 @@ typedef enum {
     HTTP_DECODER_READING_HEADERS,
     HTTP_DECODER_HEADERS_DEQUEUED,
     HTTP_DECODER_READING_CONTENT,
+    HTTP_DECODER_CLOSED_READING_CONTENT,
     HTTP_DECODER_SKIPPING_CHUNKED,
     HTTP_DECODER_SKIPPING_TRAILER,
     HTTP_DECODER_SKIPPING_BOUNDED,
@@ -138,6 +139,8 @@ static const char *trace_state(void *pstate)
             return "HTTP_DECODER_HEADERS_DEQUEUED";
         case HTTP_DECODER_READING_CONTENT:
             return "HTTP_DECODER_READING_CONTENT";
+        case HTTP_DECODER_CLOSED_READING_CONTENT:
+            return "HTTP_DECODER_CLOSED_READING_CONTENT";
         case HTTP_DECODER_SKIPPING_CHUNKED:
             return "HTTP_DECODER_SKIPPING_CHUNKED";
         case HTTP_DECODER_SKIPPING_TRAILER:
@@ -203,23 +206,24 @@ http_decoder_t *open_http_decoder(async_t *async, bytestream_1 input_stream,
     return decoder;
 }
 
-FSTRACE_DECL(ASYNCHTTP_DECODER_CLOSE, "UID=%64u");
-
-void http_decoder_close(http_decoder_t *decoder)
+static void destroy_reading_content(http_decoder_t *decoder)
 {
-    FSTRACE(ASYNCHTTP_DECODER_CLOSE, decoder->uid);
+    destroy_http_env(decoder->reading_content.envelope);
+    fsfree(decoder->reading_content.header_buffer);
+    if (decoder->reading_content.trailer_buffer)
+        fsfree(decoder->reading_content.trailer_buffer);
+}
+
+static void close_decoder(http_decoder_t *decoder)
+{
     switch (decoder->state) {
         case HTTP_DECODER_READING_HEADERS:
             field_reader_close(decoder->reading_headers.reader);
             break;
         case HTTP_DECODER_HEADERS_DEQUEUED:
-            destroy_http_env(decoder->reading_content.envelope);
-            fsfree(decoder->reading_content.header_buffer);
+            destroy_reading_content(decoder);
             break;
-        case HTTP_DECODER_READING_CONTENT:
-            /* Closing output_stream preemptively moves decoder to a
-             * different state and frees the resources. */
-            bytestream_1_close(decoder->reading_content.output_stream);
+        case HTTP_DECODER_CLOSED_READING_CONTENT:
             break;
         case HTTP_DECODER_SKIPPING_CHUNKED:
             chunkdecoder_close(decoder->skipping_chunked.chunk_decoder);
@@ -238,6 +242,46 @@ void http_decoder_close(http_decoder_t *decoder)
         queuestream_close(decoder->input_stream);
     set_decoder_state(decoder, HTTP_DECODER_ZOMBIE);
     async_wound(decoder->async, decoder);
+}
+
+FSTRACE_DECL(ASYNCHTTP_DECODER_CLOSE, "UID=%64u");
+
+void http_decoder_close(http_decoder_t *decoder)
+{
+    FSTRACE(ASYNCHTTP_DECODER_CLOSE, decoder->uid);
+    switch (decoder->state) {
+        case HTTP_DECODER_READING_CONTENT:
+            set_decoder_state(decoder, HTTP_DECODER_CLOSED_READING_CONTENT);
+            break;
+        default:
+            close_decoder(decoder);
+    };
+}
+
+static bool reading_content(http_decoder_t *decoder)
+{
+    switch (decoder->state) {
+        case HTTP_DECODER_READING_CONTENT:
+        case HTTP_DECODER_CLOSED_READING_CONTENT:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static void stop_reading_content(http_decoder_t *decoder)
+{
+    switch (decoder->state) {
+        case HTTP_DECODER_READING_CONTENT:
+            destroy_reading_content(decoder);
+            break;
+        case HTTP_DECODER_CLOSED_READING_CONTENT:
+            destroy_reading_content(decoder);
+            close_decoder(decoder);
+            break;
+        default:
+            assert(false);
+    }
 }
 
 static void register_content_callback(http_decoder_t *decoder, action_1 action)
@@ -328,7 +372,7 @@ FSTRACE_DECL(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_TRAILER_READ,
 static ssize_t chunked_wrapper_read_trailer(chunked_wrapper_t *wrapper)
 {
     http_decoder_t *decoder = wrapper->decoder;
-    assert(decoder->state == HTTP_DECODER_READING_CONTENT);
+    assert(reading_content(decoder));
     assert(wrapper->state == CHUNKED_WRAPPER_READING_TRAILER);
     assert(wrapper->reader);
     int status = field_reader_read(wrapper->reader);
@@ -385,7 +429,7 @@ static ssize_t do_chunked_wrapper_read(chunked_wrapper_t *wrapper,
                                        void *buf, size_t count)
 {
     http_decoder_t *decoder = wrapper->decoder;
-    assert(decoder->state == HTTP_DECODER_READING_CONTENT);
+    assert(reading_content(decoder));
     switch (wrapper->state) {
         case CHUNKED_WRAPPER_READING_CONTENT:
             break;
@@ -436,14 +480,6 @@ static ssize_t chunked_wrapper_read(chunked_wrapper_t *wrapper,
     return n;
 }
 
-static void stop_reading_content(http_decoder_t *decoder)
-{
-    assert(decoder->state == HTTP_DECODER_READING_CONTENT);
-    destroy_http_env(decoder->reading_content.envelope);
-    fsfree(decoder->reading_content.header_buffer);
-    fsfree(decoder->reading_content.trailer_buffer);
-}
-
 FSTRACE_DECL(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_CLOSE, "UID=%64u DECODER=%64u");
 
 static void chunked_wrapper_close(chunked_wrapper_t *wrapper)
@@ -452,6 +488,11 @@ static void chunked_wrapper_close(chunked_wrapper_t *wrapper)
     FSTRACE(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_CLOSE,
             wrapper->uid, decoder->uid);
     stop_reading_content(decoder);
+    async_wound(decoder->async, wrapper);
+    if (decoder->state == HTTP_DECODER_ZOMBIE) {
+        chunkdecoder_close(wrapper->chunk_decoder);
+        return;
+    }
     switch (wrapper->state) {
         case CHUNKED_WRAPPER_READING_CONTENT:
             decoder->skipping_chunked.chunk_decoder =
@@ -474,7 +515,6 @@ static void chunked_wrapper_close(chunked_wrapper_t *wrapper)
         default:
             abort();
     }
-    async_wound(decoder->async, wrapper);
 }
 
 FSTRACE_DECL(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_REGISTER,
@@ -532,7 +572,7 @@ FSTRACE_DECL(ASYNCHTTP_DECODER_EXHAUST_WRAPPER_READ_DUMP,
 static ssize_t exhaust_wrapper_read(exhaust_wrapper_t *wrapper,
                                     void *buf, size_t count)
 {
-    assert(wrapper->decoder->state == HTTP_DECODER_READING_CONTENT);
+    assert(reading_content(wrapper->decoder));
     size_t n = queuestream_read(wrapper->decoder->input_stream, buf, count);
     FSTRACE(ASYNCHTTP_DECODER_EXHAUST_WRAPPER_READ,
             wrapper->uid, wrapper->decoder->uid, count, n);
@@ -550,6 +590,8 @@ static void exhaust_wrapper_close(exhaust_wrapper_t *wrapper)
             wrapper->uid, decoder->uid);
     stop_reading_content(decoder);
     async_wound(decoder->async, wrapper);
+    if (decoder->state == HTTP_DECODER_ZOMBIE)
+        return;
     start_reading(decoder);
 }
 
@@ -606,7 +648,7 @@ static bounded_wrapper_t *open_bounded_wrapper(http_decoder_t *decoder,
 static ssize_t do_bounded_wrapper_read(bounded_wrapper_t *wrapper,
                                        void *buf, size_t count)
 {
-    assert(wrapper->decoder->state == HTTP_DECODER_READING_CONTENT);
+    assert(reading_content(wrapper->decoder));
     if (wrapper->errored) {
         protocol_violation();
         return -1;
@@ -653,6 +695,8 @@ static void bounded_wrapper_close(bounded_wrapper_t *wrapper)
             wrapper->uid, decoder->uid);
     stop_reading_content(decoder);
     async_wound(decoder->async, wrapper);
+    if (decoder->state == HTTP_DECODER_ZOMBIE)
+        return;
     if (wrapper->errored) {
         set_decoder_state(decoder, HTTP_DECODER_ERRORED);
         return;
