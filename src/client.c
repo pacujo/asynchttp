@@ -130,6 +130,9 @@ struct http_op {
      * HTTP_OP_STREAMING, HTTP_OP_CLOSED_STREAMING */
     protocol_stack_t stack;
 
+    /* HTTP_OP_RECEIVED */
+    size_t response_content_length;
+
     /* HTTP_OP_STREAMING, HTTP_OP_CLOSED_STREAMING */
     bytestream_1 response_content;
 };
@@ -748,8 +751,14 @@ static const http_env_t *op_receive_response(http_op_t *op)
 {
     const http_env_t *response =
         http_receive(op->stack.http_conn, HTTP_ENV_RESPONSE);
-    if (response)
+    if (response) {
         response_received(op, response);
+        int code = http_env_get_code(response);
+        if (code == 204 || (code >= 100 && code <= 199) ||
+            !charstr_case_cmp(op->method, "head"))
+            op->response_content_length = 0;
+        else op->response_content_length = HTTP_DECODE_OBEY_HEADER;
+    }
     return response;
 }
 
@@ -874,7 +883,7 @@ int http_op_get_response_content(http_op_t *op, bytestream_1 *content)
     }
     bytestream_1 stream;
     if (http_get_content(op->stack.http_conn,
-                         HTTP_DECODE_OBEY_HEADER, &stream) < 0) {
+                         op->response_content_length, &stream) < 0) {
         FSTRACE(ASYNCHTTP_OP_GET_RESPONSE_CONTENT_FAIL, op->uid);
         return -1;
     }
