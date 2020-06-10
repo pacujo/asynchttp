@@ -754,7 +754,7 @@ static const http_env_t *op_receive_response(http_op_t *op)
     if (response) {
         response_received(op, response);
         int code = http_env_get_code(response);
-        if (code == 204 || (code >= 100 && code <= 199) ||
+        if (code == 204 || (code >= 100 && code <= 199) || code == 304 ||
             !charstr_case_cmp(op->method, "head"))
             op->response_content_length = 0;
         else op->response_content_length = HTTP_DECODE_OBEY_HEADER;
