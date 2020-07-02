@@ -71,7 +71,7 @@ jsonop_t *jsonop_make_request(async_t *async, http_client_t *client,
     op->callback = NULL_ACTION_1;
     op->http_op = http_op;
     http_env_add_header(jsonop_get_request_envelope(op),
-                        "Content-type", "application/json");
+                        "Content-Type", "application/json");
     jsonencoder_t *encoder = json_encode(op->async, request_body);
     FSTRACE(ASYNCHTTP_JSONOP_CREATE, op->uid, op, async, client, uri, encoder);
     ssize_t size = jsonencoder_size(encoder);
