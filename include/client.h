@@ -136,6 +136,16 @@ inline HttpClientPtr make_http_client_ptr(http_client_t *http_client)
     return { http_client, http_client_close };
 }
 
+// std::unique_ptr for http_op_t with custom deleter.
+using HttpOpPtr = std::unique_ptr<http_op_t, std::function<void(http_op_t *)>>;
+
+// Create HttpOpPtr that takes ownership of the provided http_op_t. Pass
+// nullptr to create an instance which doesn't contain any http_op_t object.
+inline HttpOpPtr make_http_op_ptr(http_op_t *http_op)
+{
+    return { http_op, http_op_close };
+}
+
 } // namespace asynchttp
 } // namespace fsecure
 
