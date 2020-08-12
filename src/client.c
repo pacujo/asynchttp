@@ -269,7 +269,7 @@ FSTRACE_DECL(ASYNCHTTP_CLIENT_USE_SYSTEM_PROXY, "UID=%64u");
 
 void http_client_use_system_proxy(http_client_t *client)
 {
-    FSTRACE(ASYNCHTTP_CLIENT_SET_DIRECT, client->uid);
+    FSTRACE(ASYNCHTTP_CLIENT_USE_SYSTEM_PROXY, client->uid);
     fsfree(client->proxy_host);
     client->proxy_host = NULL;
     client->proxy_mode = PROXY_SYSTEM;
