@@ -38,5 +38,3 @@ env.Program('webclient',
 
 env.Program('icapscan',
             [ 'icapscan.c' ])
-
-env.Program('jsonop-request-quick-close', ['jsonop-request-quick-close.c'])

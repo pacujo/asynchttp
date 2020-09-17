@@ -70,6 +70,15 @@ test-client-file-bundle() {
 
 test-jsonop() {
     local arch=$1
+    set +e
+    run-test \
+        $arch \
+        ./stage/$arch/build/test/webclient \
+        --json \
+        --timeout 1 \
+        http://echo.jsontest.com/key/value
+    [ $? -eq 1 ] || return 1
+    set -e
     run-test > stage/$arch/body \
         $arch \
         ./stage/$arch/build/test/webclient \
@@ -89,7 +98,6 @@ run-tests () {
     echo "Run unit tests on $arch"
     echo
     stage/$arch/build/test/fstracecheck
-    run-test $arch ./stage/$arch/build/test/jsonop-request-quick-close
     test-jsonop $arch
     test-client-system-bundle $arch
     test-client-file-bundle $arch
