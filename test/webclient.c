@@ -27,6 +27,7 @@ static void perrmsg(const char *msg)
 typedef struct {
     bool json;
     const char *proxy;
+    long timeout;
     const char *trace_include;
     const char *trace_exclude;
     int64_t spam;
@@ -56,8 +57,22 @@ static void close_and_exit(globals_t *g)
     async_quit_loop(g->async);
 }
 
+static void timeout(globals_t *g)
+{
+    if (g->request) {
+        http_op_close(g->request);
+        g->request = NULL;
+    } else if (g->json_request) {
+        jsonop_close(g->json_request);
+        g->json_request = NULL;
+    }
+    async_execute(g->async, (action_1) { g->async, (act_1) async_quit_loop });
+}
+
 static void probe_content(globals_t *g)
 {
+    if (!g->request)
+        return;
     for (;;) {
         char buf[2000];
         ssize_t count = bytestream_1_read(g->content, buf, sizeof buf);
@@ -82,6 +97,7 @@ static void probe_content(globals_t *g)
     }
     bytestream_1_close(g->content);
     http_op_close(g->request);
+    g->request = NULL;
     if (g->success && g->args->spam >= 0)
         async_timer_start(g->async, async_now(g->async) + g->args->spam,
                           (action_1) { g, (act_1) get_next });
@@ -90,6 +106,8 @@ static void probe_content(globals_t *g)
 
 static void probe_receive(globals_t *g)
 {
+    if (!g->request)
+        return;
     const http_env_t *envelope = http_op_receive_response(g->request);
     if (!envelope) {
         if (errno == EAGAIN)
@@ -127,6 +145,8 @@ static void get_next_raw(globals_t *g)
 
 static void probe_json_receive(globals_t *g)
 {
+    if (!g->json_request)
+        return;
     int code = jsonop_response_code(g->json_request);
     if (code < 0) {
         if (errno == EAGAIN)
@@ -138,6 +158,7 @@ static void probe_json_receive(globals_t *g)
         g->success = true;
     }
     jsonop_close(g->json_request);
+    g->json_request = NULL;
     if (g->success && g->args->spam >= 0)
         async_timer_start(g->async, async_now(g->async) + g->args->spam,
                           (action_1) { g, (act_1) get_next });
@@ -179,6 +200,10 @@ static void get_it(globals_t *g)
         http_client_set_tls_ca_bundle(g->client, g->ca_bundle);
     }
     get_next(g);
+    if (g->args->timeout >= 0)
+        async_timer_start(g->async,
+                          async_now(g->async) + g->args->timeout * ASYNC_MS,
+                          (action_1) { g, (act_1) timeout });
     while (async_loop(g->async) < 0)
         if (errno != EINTR) {
             perror(PROGRAM);
@@ -206,6 +231,7 @@ static void print_usage(FILE *f)
     fprintf(f, "Options:\n");
     fprintf(f, "    --json\n");
     fprintf(f, "    --proxy <uri>\n");
+    fprintf(f, "    --timeout <milliseconds>\n");
     fprintf(f, "    --trace-include <regex>\n");
     fprintf(f, "    --trace-exclude <regex>\n");
     fprintf(f, "    --spam <interval>\n");
@@ -233,6 +259,12 @@ static int parse_cmdline(int argc, const char *const argv[], args_t *args)
             if (++i >= argc)
                 bad_usage();
             args->proxy = argv[i++];
+            continue;
+        }
+        if (!strcmp(argv[i], "--timeout")) {
+            if (++i >= argc)
+                bad_usage();
+            args->timeout = strtol(argv[i++], NULL, 10);
             continue;
         }
         if (!strcmp(argv[i], "--trace-include")) {
@@ -285,6 +317,7 @@ int main(int argc, const char *const *argv)
 {
     args_t args = {
         .spam = -1,
+        .timeout = -1,
     };
     int i = parse_cmdline(argc, argv, &args);
     if (!args.proxy)
