@@ -15,6 +15,7 @@
 #include <async/tcp_connection.h>
 #include <async/emptystream.h>
 #include <asynchttp/client.h>
+#include <asynchttp/jsonop.h>
 
 static const char *PROGRAM = "webclient";
 
@@ -24,6 +25,7 @@ static void perrmsg(const char *msg)
 }
 
 typedef struct {
+    bool json;
     const char *proxy;
     const char *trace_include;
     const char *trace_exclude;
@@ -41,6 +43,7 @@ typedef struct {
     tls_ca_bundle_t *ca_bundle;
     http_client_t *client;
     http_op_t *request;
+    jsonop_t *json_request;
     bytestream_1 content;
     int response_code;
     bool success;
@@ -114,14 +117,50 @@ static void probe_receive(globals_t *g)
     async_execute(g->async, probe_content_cb);
 }
 
-static void get_next(globals_t *g)
+static void get_next_raw(globals_t *g)
 {
-    g->response_code = -1;
-    g->success = false;
     g->request = http_client_make_request(g->client, "GET", g->args->uri);
     action_1 probe_cb = { g, (act_1) probe_receive };
     http_op_register_callback(g->request, probe_cb);
     async_execute(g->async, probe_cb);
+}
+
+static void probe_json_receive(globals_t *g)
+{
+    int code = jsonop_response_code(g->json_request);
+    if (code < 0) {
+        if (errno == EAGAIN)
+            return;
+        perror(PROGRAM);
+    } else if (code == 200) {
+        json_thing_t *body = jsonop_response_body(g->json_request);
+        json_utf8_dump(body, stdout);
+        g->success = true;
+    }
+    jsonop_close(g->json_request);
+    if (g->success && g->args->spam >= 0)
+        async_timer_start(g->async, async_now(g->async) + g->args->spam,
+                          (action_1) { g, (act_1) get_next });
+    else close_and_exit(g);
+}
+
+static void get_next_json(globals_t *g)
+{
+    g->json_request =
+        jsonop_make_get_request(g->async, g->client, g->args->uri);
+    action_1 probe_cb = { g, (act_1) probe_json_receive };
+    jsonop_register_callback(g->json_request, probe_cb);
+    async_execute(g->async, probe_cb);
+}
+
+static void get_next(globals_t *g)
+{
+    g->response_code = -1;
+    g->success = false;
+    if (g->args->json)
+        get_next_json(g);
+    else
+        get_next_raw(g);
 }
 
 static void get_it(globals_t *g)
@@ -165,6 +204,7 @@ static void print_usage(FILE *f)
     fprintf(f, "Usage: %s [ <options> ] <uri> [ <pem-file> ]\n", PROGRAM);
     fprintf(f, "\n");
     fprintf(f, "Options:\n");
+    fprintf(f, "    --json\n");
     fprintf(f, "    --proxy <uri>\n");
     fprintf(f, "    --trace-include <regex>\n");
     fprintf(f, "    --trace-exclude <regex>\n");
@@ -184,6 +224,11 @@ static int parse_cmdline(int argc, const char *const argv[], args_t *args)
 {
     int i = 1;
     while (i < argc && argv[i][0] == '-') {
+        if (!strcmp(argv[i], "--json")) {
+            i++;
+            args->json = true;
+            continue;
+        }
         if (!strcmp(argv[i], "--proxy")) {
             if (++i >= argc)
                 bad_usage();
