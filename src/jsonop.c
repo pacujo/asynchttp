@@ -82,6 +82,25 @@ jsonop_t *jsonop_make_request(async_t *async, http_client_t *client,
     return op;
 }
 
+FSTRACE_DECL(ASYNCHTTP_JSONOP_CREATE_GET,
+             "UID=%64u PTR=%p ASYNC=%p CLIENT=%p URI=%s");
+
+jsonop_t *jsonop_make_get_request(async_t *async, http_client_t *client,
+                                  const char *uri)
+{
+    http_op_t *http_op = http_client_make_request(client, "GET", uri);
+    if (!http_op)
+        return NULL;
+    jsonop_t *op = fsalloc(sizeof *op);
+    op->async = async;
+    op->uid = fstrace_get_unique_id();
+    op->callback = NULL_ACTION_1;
+    op->http_op = http_op;
+    FSTRACE(ASYNCHTTP_JSONOP_CREATE_GET, op->uid, op, async, client, uri);
+    op->state = JSONOP_REQUESTED;
+    return op;
+}
+
 http_env_t *jsonop_get_request_envelope(jsonop_t *op)
 {
     return http_op_get_request_envelope(op->http_op);

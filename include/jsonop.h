@@ -13,14 +13,17 @@ extern "C" {
 
 typedef struct jsonop jsonop_t;
 
-/* A JSON operation can be used with an http_client_t POST request when
- * the request and response carry a JSON payload. Both uri and
+/* A JSON operation can be used with an http_client_t GET or POST
+ * request when the response carry a JSON payload. Both uri and
  * request_body are only needed for the duration of the function
  * call. */
 jsonop_t *jsonop_make_request(async_t *async, http_client_t *client,
                               const char *uri, json_thing_t *request_body);
 
-/* The POST request envelope can be amended before
+jsonop_t *jsonop_make_get_request(async_t *async, http_client_t *client,
+                                  const char *uri);
+
+/* The request envelope can be amended before
  * jsonop_response_headers(), jsonop_response_code() or
  * jsonop_response_body() is called on the operation. */
 http_env_t *jsonop_get_request_envelope(jsonop_t *op);
