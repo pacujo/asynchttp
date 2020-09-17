@@ -68,6 +68,21 @@ test-client-file-bundle() {
         test/certs/DigiCert_High_Assurance_EV_Root_CA.pem
 }
 
+test-jsonop() {
+    local arch=$1
+    run-test > stage/$arch/body \
+        $arch \
+        ./stage/$arch/build/test/webclient \
+        --json \
+        http://echo.jsontest.com/key/value
+    cat > stage/$arch/expected-body <<EOF
+{
+  "key": "value"
+}
+EOF
+    cmp stage/$arch/expected-body stage/$arch/body
+}
+
 run-tests () {
     local arch=$1
     echo
@@ -75,6 +90,7 @@ run-tests () {
     echo
     stage/$arch/build/test/fstracecheck
     run-test $arch ./stage/$arch/build/test/jsonop-request-quick-close
+    test-jsonop $arch
     test-client-system-bundle $arch
     test-client-file-bundle $arch
 }
