@@ -24,19 +24,26 @@ static void perrmsg(const char *msg)
 }
 
 typedef struct {
+    const char *proxy;
+    const char *trace_include;
+    const char *trace_exclude;
+    int64_t spam;
+    bool unverified;
+    bool pinned;
+    const char *uri;
+    const char *pem_path;
+} args_t;
+
+typedef struct {
+    args_t *args;
     async_t *async;
     fsadns_t *dns;
-    const char *uri;
-    const char *proxy;
-    const char *pem_path;
     tls_ca_bundle_t *ca_bundle;
     http_client_t *client;
     http_op_t *request;
     bytestream_1 content;
     int response_code;
     bool success;
-    int64_t spam;
-    bool unverified, pinned;
 } globals_t;
 
 static void get_next(globals_t *g);
@@ -72,8 +79,8 @@ static void probe_content(globals_t *g)
     }
     bytestream_1_close(g->content);
     http_op_close(g->request);
-    if (g->success && g->spam >= 0)
-        async_timer_start(g->async, async_now(g->async) + g->spam,
+    if (g->success && g->args->spam >= 0)
+        async_timer_start(g->async, async_now(g->async) + g->args->spam,
                           (action_1) { g, (act_1) get_next });
     else close_and_exit(g);
 }
@@ -111,7 +118,7 @@ static void get_next(globals_t *g)
 {
     g->response_code = -1;
     g->success = false;
-    g->request = http_client_make_request(g->client, "GET", g->uri);
+    g->request = http_client_make_request(g->client, "GET", g->args->uri);
     action_1 probe_cb = { g, (act_1) probe_receive };
     http_op_register_callback(g->request, probe_cb);
     async_execute(g->async, probe_cb);
@@ -120,16 +127,16 @@ static void get_next(globals_t *g)
 static void get_it(globals_t *g)
 {
     g->client = open_http_client_2(g->async, g->dns);
-    if (g->proxy)
-        http_client_set_proxy_from_uri(g->client, g->proxy);
-    if (g->unverified) {
+    if (g->args->proxy)
+        http_client_set_proxy_from_uri(g->client, g->args->proxy);
+    if (g->args->unverified) {
         g->ca_bundle = make_unverified_tls_ca_bundle();
         http_client_set_tls_ca_bundle(g->client, g->ca_bundle);
-    } else if (g->pinned) {
-        g->ca_bundle = make_pinned_tls_ca_bundle(g->pem_path, NULL);
+    } else if (g->args->pinned) {
+        g->ca_bundle = make_pinned_tls_ca_bundle(g->args->pem_path, NULL);
         http_client_set_tls_ca_bundle(g->client, g->ca_bundle);
-    } else if (g->pem_path) {
-        g->ca_bundle = make_tls_ca_bundle(g->pem_path, NULL);
+    } else if (g->args->pem_path) {
+        g->ca_bundle = make_tls_ca_bundle(g->args->pem_path, NULL);
         http_client_set_tls_ca_bundle(g->client, g->ca_bundle);
     }
     get_next(g);
@@ -173,37 +180,26 @@ static void bad_usage()
     exit(1);
 }
 
-static int parse_cmdline(int argc, const char *const argv[],
-                         const char **proxy,
-                         const char **trace_include, const char **trace_exclude,
-                         int64_t *spam,
-                         bool *unverified, bool *pinned,
-                         const char **uri, const char **pem_path)
+static int parse_cmdline(int argc, const char *const argv[], args_t *args)
 {
-    *proxy = NULL;
-    *trace_include = NULL;
-    *trace_exclude = NULL;
-    *spam = -1;
-    *unverified = false;
-    *pinned = false;
     int i = 1;
     while (i < argc && argv[i][0] == '-') {
         if (!strcmp(argv[i], "--proxy")) {
             if (++i >= argc)
                 bad_usage();
-            *proxy = argv[i++];
+            args->proxy = argv[i++];
             continue;
         }
         if (!strcmp(argv[i], "--trace-include")) {
             if (++i >= argc)
                 bad_usage();
-            *trace_include = argv[i++];
+            args->trace_include = argv[i++];
             continue;
         }
         if (!strcmp(argv[i], "--trace-exclude")) {
             if (++i >= argc)
                 bad_usage();
-            *trace_exclude = argv[i++];
+            args->trace_exclude = argv[i++];
             continue;
         }
         if (!strcmp(argv[i], "--spam")) {
@@ -214,17 +210,17 @@ static int parse_cmdline(int argc, const char *const argv[],
             double interval = strtod(start, &end);
             if (start == end || interval < 0 || interval > INT64_MAX)
                 bad_usage();
-            *spam = (int64_t) (interval * ASYNC_S);
+            args->spam = (int64_t) (interval * ASYNC_S);
             continue;
         }
         if (!strcmp(argv[i], "--unverified")) {
             i++;
-            *unverified = true;
+            args->unverified = true;
             continue;
         }
         if (!strcmp(argv[i], "--pinned")) {
             i++;
-            *pinned = true;
+            args->pinned = true;
             continue;
         }
         if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
@@ -235,52 +231,41 @@ static int parse_cmdline(int argc, const char *const argv[],
     }
     if (i == argc)
         bad_usage();
-    *uri = argv[i++];
-    *pem_path = i < argc ? argv[i++] : NULL;
+    args->uri = argv[i++];
+    args->pem_path = i < argc ? argv[i++] : NULL;
     return i;
 }
 
 int main(int argc, const char *const *argv)
 {
-    const char *proxy;
-    const char *trace_include;
-    const char *trace_exclude;
-    int64_t spam;
-    bool unverified, pinned;
-    const char *uri;
-    const char *pem_path;
-    int i = parse_cmdline(argc, argv, &proxy, &trace_include,
-                          &trace_exclude, &spam, &unverified, &pinned,
-                          &uri, &pem_path);
-    if (!proxy)
-        proxy = getenv("http_proxy");
+    args_t args = {
+        .spam = -1,
+    };
+    int i = parse_cmdline(argc, argv, &args);
+    if (!args.proxy)
+        args.proxy = getenv("http_proxy");
     if (i != argc) {
         print_usage(stderr);
         return EXIT_FAILURE;
     }
-    if (unverified && pinned) {
+    if (args.unverified && args.pinned) {
         fprintf(stderr, "%s: --unverified and --pinned may not be "
                 "specified at the same time\n", PROGRAM);
         return EXIT_FAILURE;
     }
-    if (pinned && !pem_path) {
+    if (args.pinned && !args.pem_path) {
         fprintf(stderr, "%s: --pinned requires you to specify a pem-file\n",
                 PROGRAM);
         return EXIT_FAILURE;
     }
     fstrace_t *trace = fstrace_direct(stderr);
-    if (!set_up_tracing(trace, trace_include, trace_exclude)) {
+    if (!set_up_tracing(trace, args.trace_include, args.trace_exclude)) {
         fprintf(stderr, "%s: bad regular expression\n", PROGRAM);
         return EXIT_FAILURE;
     }
     globals_t g = {
         .async = make_async(),
-        .uri = uri,
-        .proxy = proxy,
-        .pem_path = pem_path,
-        .spam = spam,
-        .unverified = unverified,
-        .pinned = pinned
+        .args = &args,
     };
     g.dns = fsadns_make_resolver(g.async, 10,
                                  (action_1) { trace, (act_1) fstrace_reopen });
