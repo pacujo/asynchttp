@@ -86,6 +86,23 @@ http_op_t *http_client_make_request(http_client_t *client,
 void http_op_set_content(http_op_t *op, ssize_t content_length,
                          bytestream_1 content);
 
+/* Set or cancel a maximum expected duration for the operation. Each
+ * operation has an associated convenience timer that is not active by
+ * default. The timer can be started, restarted or canceled at any
+ * time, even redundantly. The duration is expressed in ASYNC_NS
+ * units. Nonpositive durations expire right away.
+ *
+ * A timer expiry causes op's callback (see http_op_register_callback)
+ * to be called if relevant. Also, the content bytestream's callback
+ * is called analogously as needed.
+ *
+ * After a timer expiry, the operation may proceed normally with one
+ * exception: instead of EAGAIN, an ETIMEDOUT response is returned.
+ * After ETIMEDOUT is returned, the operation is in a permanent,
+ * nonrecoverable error state. */
+void http_op_set_timeout(http_op_t *op, int64_t max_duration);
+void http_op_cancel_timeout(http_op_t *op);
+
 /* Get the request envelope. It can be modified until
  * http_op_receive_response() is called on the operation for the first
  * time. */

@@ -23,6 +23,12 @@ jsonop_t *jsonop_make_request(async_t *async, http_client_t *client,
 jsonop_t *jsonop_make_get_request(async_t *async, http_client_t *client,
                                   const char *uri);
 
+/* Set or cancel a maximum expected duration for the operation. See
+ * http_op_set_timeout() and http_op_cancel_timeout() for the
+ * semantics. */
+void jsonop_set_timeout(jsonop_t *op, int64_t max_duration);
+void jsonop_cancel_timeout(jsonop_t *op);
+
 /* The request envelope can be amended before
  * jsonop_response_headers(), jsonop_response_code() or
  * jsonop_response_body() is called on the operation. */

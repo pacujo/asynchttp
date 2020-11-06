@@ -82,6 +82,22 @@ jsonop_t *jsonop_make_request(async_t *async, http_client_t *client,
     return op;
 }
 
+FSTRACE_DECL(ASYNCHTTP_JSONOP_SET_TIMEOUT, "UID=%64u DURATION=%64d");
+
+void jsonop_set_timeout(jsonop_t *op, int64_t max_duration)
+{
+    FSTRACE(ASYNCHTTP_JSONOP_SET_TIMEOUT, op->uid, max_duration);
+    http_op_set_timeout(op->http_op, max_duration);
+}
+
+FSTRACE_DECL(ASYNCHTTP_JSONOP_CANCEL_TIMEOUT, "UID=%64u");
+
+void jsonop_cancel_timeout(jsonop_t *op)
+{
+    FSTRACE(ASYNCHTTP_JSONOP_CANCEL_TIMEOUT, op->uid);
+    http_op_cancel_timeout(op->http_op);
+}
+
 FSTRACE_DECL(ASYNCHTTP_JSONOP_CREATE_GET,
              "UID=%64u PTR=%p ASYNC=%p CLIENT=%p URI=%s");
 

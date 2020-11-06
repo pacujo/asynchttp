@@ -57,18 +57,6 @@ static void close_and_exit(globals_t *g)
     async_quit_loop(g->async);
 }
 
-static void timeout(globals_t *g)
-{
-    if (g->request) {
-        http_op_close(g->request);
-        g->request = NULL;
-    } else if (g->json_request) {
-        jsonop_close(g->json_request);
-        g->json_request = NULL;
-    }
-    async_execute(g->async, (action_1) { g->async, (act_1) async_quit_loop });
-}
-
 static void probe_content(globals_t *g)
 {
     if (!g->request)
@@ -138,6 +126,8 @@ static void probe_receive(globals_t *g)
 static void get_next_raw(globals_t *g)
 {
     g->request = http_client_make_request(g->client, "GET", g->args->uri);
+    if (g->args->timeout >= 0)
+        http_op_set_timeout(g->request, g->args->timeout * ASYNC_MS);
     action_1 probe_cb = { g, (act_1) probe_receive };
     http_op_register_callback(g->request, probe_cb);
     async_execute(g->async, probe_cb);
@@ -169,6 +159,8 @@ static void get_next_json(globals_t *g)
 {
     g->json_request =
         jsonop_make_get_request(g->async, g->client, g->args->uri);
+    if (g->args->timeout >= 0)
+        jsonop_set_timeout(g->json_request, g->args->timeout * ASYNC_MS);
     action_1 probe_cb = { g, (act_1) probe_json_receive };
     jsonop_register_callback(g->json_request, probe_cb);
     async_execute(g->async, probe_cb);
@@ -200,10 +192,6 @@ static void get_it(globals_t *g)
         http_client_set_tls_ca_bundle(g->client, g->ca_bundle);
     }
     get_next(g);
-    if (g->args->timeout >= 0)
-        async_timer_start(g->async,
-                          async_now(g->async) + g->args->timeout * ASYNC_MS,
-                          (action_1) { g, (act_1) timeout });
     while (async_loop(g->async) < 0)
         if (errno != EINTR) {
             perror(PROGRAM);

@@ -96,6 +96,13 @@ typedef enum {
  *              STREAM_CLOSED -------> CLOSED
  */
 
+typedef enum {
+    HTTP_OP_TIMER_CANCELED,
+    HTTP_OP_TIMER_RUNNING,
+    HTTP_OP_TIMER_EXPIRED,
+    HTTP_OP_TIMER_REPORTED
+} http_op_timer_state_t;
+
 struct http_op {
     http_client_t *client;
     uint64_t uid;
@@ -114,6 +121,8 @@ struct http_op {
     ssize_t content_length;
     action_1 callback;
     bool recycle_connection;
+    http_op_timer_state_t timer_state;
+    async_timer_t *timer; /* HTTP_OP_TIMER_RUNNING */
 
     /* HTTP_OP_IDLE, HTTP_OP_CONNECTING_DIRECTLY,
      * HTTP_OP_CONNECTING_TO_PROXY, HTTP_OP_TUNNELING */
@@ -135,6 +144,7 @@ struct http_op {
 
     /* HTTP_OP_STREAMING, HTTP_OP_CLOSED_STREAMING */
     bytestream_1 response_content;
+    action_1 response_content_callback;
 };
 
 FSTRACE_DECL(ASYNCHTTP_CLIENT_CREATE, "UID=%64u PTR=%p ASYNC=%p");
@@ -429,7 +439,8 @@ static void set_op_state(http_op_t *op, http_op_state_t state)
     op->state = state;
 }
 
-FSTRACE_DECL(ASYNCHTTP_OP_SET_PROXY, "CLIENT=%64u PROXY-HOST=%s PROXY-PORT=%u");
+FSTRACE_DECL(ASYNCHTTP_OP_SET_PROXY,
+             "CLIENT=%64u PROXY-HOST=%s PROXY-PORT=%u");
 
 static void set_op_proxy(http_op_t *op,
                          const char *proxy_host, unsigned proxy_port)
@@ -489,6 +500,7 @@ http_op_t *http_client_make_request(http_client_t *client,
     op->client = client;
     op->uid = fstrace_get_unique_id();
     op->state = HTTP_OP_IDLE;
+    op->timer_state = HTTP_OP_TIMER_CANCELED;
     if (!learn_op_proxy(op, uri)) {
         fsfree(op);
         return NULL;
@@ -531,6 +543,114 @@ void http_op_set_content(http_op_t *op, ssize_t size, bytestream_1 content)
     FSTRACE(ASYNCHTTP_OP_SET_CONTENT, op->uid, content.obj);
     op->request_content = content;
     op->content_length = size;
+}
+
+static const char *trace_timer_state(void *pstate)
+{
+    switch (*(http_op_timer_state_t *) pstate) {
+        case HTTP_OP_TIMER_CANCELED:
+            return "HTTP_OP_TIMER_CANCELED";
+        case HTTP_OP_TIMER_RUNNING:
+            return "HTTP_OP_TIMER_RUNNING";
+        case HTTP_OP_TIMER_EXPIRED:
+            return "HTTP_OP_TIMER_EXPIRED";
+        case HTTP_OP_TIMER_REPORTED:
+            return "HTTP_OP_TIMER_REPORTED";
+        default:
+            return fstrace_unsigned_repr(*(unsigned *) pstate);
+    }
+}
+
+FSTRACE_DECL(ASYNCHTTP_OP_SET_TIMER_STATE, "UID=%64u OLD=%I NEW=%I");
+
+static void set_timer_state(http_op_t *op, http_op_timer_state_t timer_state)
+{
+    FSTRACE(ASYNCHTTP_OP_SET_TIMER_STATE, op->uid,
+            trace_timer_state, &op->timer_state,
+            trace_timer_state, &timer_state);
+    op->timer_state = timer_state;
+}
+
+static int again_or_timeout(http_op_t *op, int err)
+{
+    if (err != EAGAIN)
+        return err;
+    switch (op->timer_state) {
+        case HTTP_OP_TIMER_EXPIRED:
+            set_timer_state(op, HTTP_OP_TIMER_REPORTED);
+            return ETIMEDOUT;
+        case HTTP_OP_TIMER_REPORTED:
+            return ETIMEDOUT;
+        default:
+            return EAGAIN;
+    }
+}
+
+static void op_probe(http_op_t *op)
+{
+    action_1_perf(op->callback);
+}
+
+FSTRACE_DECL(ASYNCHTTP_OP_TIMEOUT_NOTIFY_OP, "UID=%64u");
+FSTRACE_DECL(ASYNCHTTP_OP_TIMEOUT_NOTIFY_STREAM, "UID=%64u");
+
+static void op_timeout(http_op_t *op)
+{
+    assert(op->timer_state == HTTP_OP_TIMER_RUNNING);
+    set_timer_state(op, HTTP_OP_TIMER_EXPIRED);
+    switch (op->state) {
+        case HTTP_OP_CONNECTING_DIRECTLY:
+        case HTTP_OP_CONNECTING_TO_PROXY:
+        case HTTP_OP_TUNNELING:
+        case HTTP_OP_SENT:
+            FSTRACE(ASYNCHTTP_OP_TIMEOUT_NOTIFY_OP, op->uid);
+            op_probe(op);
+            break;
+        case HTTP_OP_STREAMING:
+            FSTRACE(ASYNCHTTP_OP_TIMEOUT_NOTIFY_STREAM, op->uid);
+            action_1_perf(op->response_content_callback);
+            break;
+        default:
+            ;
+    }
+}
+
+static void op_cancel_timeout(http_op_t *op)
+{
+    assert(op->state != HTTP_OP_CLOSED);
+    switch (op->timer_state) {
+        case HTTP_OP_TIMER_RUNNING:
+            async_timer_cancel(op->client->async, op->timer);
+            set_timer_state(op, HTTP_OP_TIMER_CANCELED);
+            break;
+        case HTTP_OP_TIMER_EXPIRED:
+            set_timer_state(op, HTTP_OP_TIMER_CANCELED);
+            break;
+        default:
+            ;
+    }
+}
+
+FSTRACE_DECL(ASYNCHTTP_OP_SET_TIMEOUT, "UID=%64u DURATION=%64d");
+
+void http_op_set_timeout(http_op_t *op, int64_t max_duration)
+{
+    FSTRACE(ASYNCHTTP_OP_SET_TIMEOUT, op->uid, max_duration);
+    op_cancel_timeout(op);
+    if (op->timer_state != HTTP_OP_TIMER_CANCELED)
+        return;
+    set_timer_state(op, HTTP_OP_TIMER_RUNNING);
+    op->timer = async_timer_start(op->client->async,
+                                  async_now(op->client->async) + max_duration,
+                                  (action_1) { op, (act_1) op_timeout });
+}
+
+FSTRACE_DECL(ASYNCHTTP_OP_CANCEL_TIMEOUT, "UID=%64u");
+
+void http_op_cancel_timeout(http_op_t *op)
+{
+    FSTRACE(ASYNCHTTP_OP_CANCEL_TIMEOUT, op->uid);
+    op_cancel_timeout(op);
 }
 
 http_env_t *http_op_get_request_envelope(http_op_t *op)
@@ -589,11 +709,6 @@ static void op_send_http_connect(http_op_t *op)
     bytestream_1 content = farewellstream_as_bytestream_1(fwstr);
     http_send(op->stack.http_conn, connect_request, HTTP_ENCODE_RAW, content);
     set_op_state(op, HTTP_OP_TUNNELING);
-}
-
-static void op_probe(http_op_t *op)
-{
-    action_1_perf(op->callback);
 }
 
 FSTRACE_DECL(ASYNCHTTP_OP_SEND_VIA_PROXY_REUSE_HTTPS, "UID=%64u");
@@ -762,6 +877,7 @@ static const http_env_t *op_receive_response(http_op_t *op)
     return response;
 }
 
+FSTRACE_DECL(ASYNCHTTP_OP_RECEIVE_TIMED_OUT, "UID=%64u");
 FSTRACE_DECL(ASYNCHTTP_OP_RECEIVE_DIRECTLY, "UID=%64u");
 FSTRACE_DECL(ASYNCHTTP_OP_RECEIVE_VIA_PROXY, "UID=%64u");
 FSTRACE_DECL(ASYNCHTTP_OP_RECEIVE_TUNNELING, "UID=%64u");
@@ -771,6 +887,11 @@ FSTRACE_DECL(ASYNCHTTP_OP_RECEIVED, "UID=%64u RESPONSE=%p ERRNO=%e");
 
 const http_env_t *http_op_receive_response(http_op_t *op)
 {
+    if (op->timer_state == HTTP_OP_TIMER_REPORTED) {
+        FSTRACE(ASYNCHTTP_OP_RECEIVE_TIMED_OUT, op->uid);
+        errno = ETIMEDOUT;
+        return NULL;
+    }
     const http_env_t *response;
     switch (op->state) {
         case HTTP_OP_IDLE:
@@ -799,6 +920,7 @@ const http_env_t *http_op_receive_response(http_op_t *op)
             errno = 0;          /* pseudo-EOF */
             response = NULL;
     }
+    errno = again_or_timeout(op, errno);
     FSTRACE(ASYNCHTTP_OP_RECEIVED, op->uid, response);
     return response;
 }
@@ -861,18 +983,82 @@ static void response_closed(http_op_t *op)
     }
 }
 
+FSTRACE_DECL(ASYNCHTTP_OP_WRAPPER_READ_TIMED_OUT, "UID=%64u");
+FSTRACE_DECL(ASYNCHTTP_OP_WRAPPER_READ, "UID=%64u WANT=%z GOT=%z ERRNO=%e");
+FSTRACE_DECL(ASYNCHTTP_OP_WRAPPER_READ_DUMP, "UID=%64u DATA=%B");
+
+static ssize_t content_wrapper_read(void *obj, void *buf, size_t count)
+{
+    http_op_t *op = obj;
+    if (op->timer_state == HTTP_OP_TIMER_REPORTED) {
+        FSTRACE(ASYNCHTTP_OP_WRAPPER_READ_TIMED_OUT, op->uid);
+        errno = ETIMEDOUT;
+        return -1;
+    }
+    ssize_t n = bytestream_1_read(op->response_content, buf, count);
+    if (n < 0)
+        errno = again_or_timeout(op, errno);
+    FSTRACE(ASYNCHTTP_OP_WRAPPER_READ, op->uid, count, n);
+    FSTRACE(ASYNCHTTP_OP_WRAPPER_READ_DUMP, op->uid, buf, n);
+    return n;
+}
+
+FSTRACE_DECL(ASYNCHTTP_OP_WRAPPER_CLOSE, "UID=%64u");
+
+static void content_wrapper_close(void *obj)
+{
+    http_op_t *op = obj;
+    FSTRACE(ASYNCHTTP_OP_WRAPPER_CLOSE, op->uid);
+    bytestream_1_close(op->response_content);
+    action_1 farewell_cb = { op, (act_1) response_closed };
+    async_execute(op->client->async, farewell_cb);
+}
+
+FSTRACE_DECL(ASYNCHTTP_OP_WRAPPER_REGISTER, "UID=%64u OBJ=%p ACT=%p");
+
+static void content_wrapper_register_callback(void *obj, action_1 action)
+{
+    http_op_t *op = obj;
+    FSTRACE(ASYNCHTTP_OP_WRAPPER_REGISTER, op->uid, action.obj, action.act);
+    bytestream_1_register_callback(op->response_content, action);
+    op->response_content_callback = action;
+}
+
+FSTRACE_DECL(ASYNCHTTP_OP_WRAPPER_UNREGISTER, "UID=%64u");
+
+static void content_wrapper_unregister_callback(void *obj)
+{
+    http_op_t *op = obj;
+    FSTRACE(ASYNCHTTP_OP_WRAPPER_UNREGISTER, op->uid);
+    bytestream_1_unregister_callback(op->response_content);
+    op->response_content_callback = NULL_ACTION_1;
+}
+
+static struct bytestream_1_vt content_wrapper_vt = {
+    .read = content_wrapper_read,
+    .close = content_wrapper_close,
+    .register_callback = content_wrapper_register_callback,
+    .unregister_callback = content_wrapper_unregister_callback
+};
+
+FSTRACE_DECL(ASYNCHTTP_OP_GET_RESPONSE_CONTENT_TIMED_OUT, "UID=%64u");
 FSTRACE_DECL(ASYNCHTTP_OP_GET_RESPONSE_CONTENT_FAIL, "UID=%64u ERRNO=%e");
 FSTRACE_DECL(ASYNCHTTP_OP_GET_RESPONSE_CONTENT, "UID=%64u CONTENT=%p");
 
 int http_op_get_response_content(http_op_t *op, bytestream_1 *content)
 {
+    if (op->timer_state == HTTP_OP_TIMER_REPORTED) {
+        FSTRACE(ASYNCHTTP_OP_GET_RESPONSE_CONTENT_TIMED_OUT, op->uid);
+        errno = ETIMEDOUT;
+        return -1;
+    }
     switch (op->state) {
         case HTTP_OP_CONNECTING_DIRECTLY:
         case HTTP_OP_CONNECTING_TO_PROXY:
         case HTTP_OP_TUNNELING:
         case HTTP_OP_SENT:
             FSTRACE(ASYNCHTTP_OP_GET_RESPONSE_CONTENT_FAIL, op->uid);
-            errno = EAGAIN;
+            errno = again_or_timeout(op, EAGAIN);
             return -1;
         default:
             FSTRACE(ASYNCHTTP_OP_GET_RESPONSE_CONTENT_FAIL, op->uid);
@@ -884,13 +1070,13 @@ int http_op_get_response_content(http_op_t *op, bytestream_1 *content)
     bytestream_1 stream;
     if (http_get_content(op->stack.http_conn,
                          op->response_content_length, &stream) < 0) {
+        errno = again_or_timeout(op, errno);
         FSTRACE(ASYNCHTTP_OP_GET_RESPONSE_CONTENT_FAIL, op->uid);
         return -1;
     }
-    action_1 farewell_cb = { op, (act_1) response_closed };
-    farewellstream_t *fwstr =
-        open_relaxed_farewellstream(op->client->async, stream, farewell_cb);
-    *content = op->response_content = farewellstream_as_bytestream_1(fwstr);
+    op->response_content = stream;
+    *content = (bytestream_1) { op, &content_wrapper_vt };
+    op->response_content_callback = NULL_ACTION_1;
     FSTRACE(ASYNCHTTP_OP_GET_RESPONSE_CONTENT, op->uid, content->obj);
     set_op_state(op, HTTP_OP_STREAMING);
     return 0;
@@ -948,6 +1134,8 @@ static void do_close(http_op_t *op)
         default:
             assert(false);
     }
+    if (op->timer_state == HTTP_OP_TIMER_RUNNING)
+        async_timer_cancel(op->client->async, op->timer);
     destroy_tls_ca_bundle(op->ca_bundle);
     set_op_state(op, HTTP_OP_CLOSED);
     async_wound(op->client->async, op);
