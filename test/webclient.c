@@ -273,7 +273,7 @@ static int parse_cmdline(int argc, const char *const argv[], args_t *args)
             const char *start = argv[i++];
             char *end;
             double interval = strtod(start, &end);
-            if (start == end || interval < 0 || interval > INT64_MAX)
+            if (start == end || interval < 0)
                 bad_usage();
             args->spam = (int64_t) (interval * ASYNC_S);
             continue;
