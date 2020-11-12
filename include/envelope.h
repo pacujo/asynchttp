@@ -27,13 +27,43 @@ http_env_t *make_http_env_response(const char *protocol, unsigned code,
  * to the copy without affecting the original. */
 http_env_t *copy_http_env(const http_env_t *envelope);
 void destroy_http_env(http_env_t *envelope);
-void http_env_add_header(http_env_t *envelope, const char *field,
+
+/* Add header to the envelope. The strings passed must stay valid throughout the
+ * lifetime of the envelope. */
+void http_env_add_header(http_env_t *envelope,
+                         const char *field,
                          const char *value);
 
+/* Add header to the envelope.
+ *
+ * If free_field is true, then envelope acquires ownership of the field argument
+ * and will deallocate it using fsfree() on destruction. If free_field is false,
+ * the field must stay valid throughout the lifetime of the envelope. The
+ * behavior for the value argument is analogous. */
+void http_env_add_header_2(http_env_t *envelope,
+                           char *field,
+                           bool free_field,
+                           char *value,
+                           bool free_value);
+
 /* Chunked encoding supports trailer fields that are appended to the
- * message body. */
-void http_env_add_trailer(http_env_t *envelope, const char *field,
+ * message body. The strings passed must stay valid throughout the lifetime of
+ * the envelope. */
+void http_env_add_trailer(http_env_t *envelope,
+                          const char *field,
                           const char *value);
+
+/* Add trailer to the envelope.
+ *
+ * If free_field is true, then envelope acquires ownership of the field argument
+ * and will deallocate it using fsfree() on destruction. If free_field is false,
+ * the field must stay valid throughout the lifetime of the envelope. The
+ * behavior for the value argument is analogous. */
+void http_env_add_trailer_2(http_env_t *envelope,
+                            char *field,
+                            bool free_field,
+                            char *value,
+                            bool free_value);
 
 /* Chunked encoding supports extensions that are appended to the chunk
  * length. This function allows you to specify the extensions for the

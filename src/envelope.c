@@ -6,7 +6,8 @@
 #include "asynchttp_version.h"
 
 typedef struct {
-    const char *field, *value;
+    char *field, *value;
+    bool free_field, free_value;
 } httpassoc_t;
 
 struct http_env {
@@ -71,6 +72,10 @@ static void destroy_fields(list_t *fields)
 {
     while (!list_empty(fields)) {
         httpassoc_t *field = (httpassoc_t *) list_pop_first(fields);
+        if (field->free_field)
+            fsfree(field->field);
+        if (field->free_value)
+            fsfree(field->value);
         fsfree(field);
     }
     destroy_list(fields);
@@ -86,11 +91,26 @@ void destroy_http_env(http_env_t *envelope)
     fsfree(envelope);
 }
 
-static void add_field(list_t *fields, const char *field, const char *value)
+static httpassoc_t *create_assoc(char *field,
+                                 bool free_field,
+                                 char *value,
+                                 bool free_value)
 {
     httpassoc_t *assoc = fsalloc(sizeof *assoc);
     assoc->field = field;
+    assoc->free_field = free_field;
     assoc->value = value;
+    assoc->free_value = free_value;
+    return assoc;
+}
+
+static void add_field(list_t *fields,
+                      char *field,
+                      bool free_field,
+                      char *value,
+                      bool free_value)
+{
+    httpassoc_t *assoc = create_assoc(field, free_field, value, free_value);
     list_append(fields, assoc);
 }
 
@@ -100,7 +120,25 @@ void http_env_add_header(http_env_t *envelope, const char *field,
                          const char *value)
 {
     FSTRACE(ASYNCHTTP_ENV_ADD_HEADER, envelope->uid, field, value);
-    add_field(envelope->headers, field, value);
+    add_field(envelope->headers, (char *) field, false, (char *) value, false);
+}
+
+FSTRACE_DECL(ASYNCHTTP_ENV_ADD_HEADER_2,
+             "UID=%64u FIELD=%s FREE-FIELD=%b VALUE=%s FREE-VALUE=%b");
+
+void http_env_add_header_2(http_env_t *envelope,
+                           char *field,
+                           bool free_field,
+                           char *value,
+                           bool free_value)
+{
+    FSTRACE(ASYNCHTTP_ENV_ADD_HEADER_2,
+            envelope->uid,
+            field,
+            free_field,
+            value,
+            free_value);
+    add_field(envelope->headers, field, free_field, value, free_value);
 }
 
 FSTRACE_DECL(ASYNCHTTP_ENV_ADD_TRAILER, "UID=%64u FIELD=%s VALUE=%s");
@@ -109,7 +147,25 @@ void http_env_add_trailer(http_env_t *envelope, const char *field,
                           const char *value)
 {
     FSTRACE(ASYNCHTTP_ENV_ADD_TRAILER, envelope->uid, field, value);
-    add_field(envelope->trailers, field, value);
+    add_field(envelope->trailers, (char *) field, false, (char *) value, false);
+}
+
+FSTRACE_DECL(ASYNCHTTP_ENV_ADD_TRAILER_2,
+             "UID=%64u FIELD=%s FREE-FIELD=%b VALUE=%s FREE-VALUE=%b");
+
+void http_env_add_trailer_2(http_env_t *envelope,
+                            char *field,
+                            bool free_field,
+                            char *value,
+                            bool free_value)
+{
+    FSTRACE(ASYNCHTTP_ENV_ADD_TRAILER_2,
+            envelope->uid,
+            field,
+            free_field,
+            value,
+            free_value);
+    add_field(envelope->trailers, field, free_field, value, free_value);
 }
 
 FSTRACE_DECL(ASYNCHTTP_ENV_SET_FINAL_EXT, "UID=%64u FINAL-EXT=%s");
@@ -190,7 +246,23 @@ http_env_iter_t *http_env_get_next_trailer(const http_env_t *envelope,
     return get_next_field(envelope->trailers, iter, field, value);
 }
 
+static httpassoc_t *copy_assoc(const httpassoc_t *assoc)
+{
+    char *field_copy = assoc->field;
+    if (assoc->free_field)
+        field_copy = charstr_dupstr(assoc->field);
+    char *value_copy = assoc->value;
+    if (assoc->free_value)
+        value_copy = charstr_dupstr(assoc->value);
+    return create_assoc(field_copy,
+                        assoc->free_field,
+                        value_copy,
+                        assoc->free_value);
+}
+
 FSTRACE_DECL(ASYNCHTTP_ENV_COPY, "UID=%64u ORIG=%64u");
+FSTRACE_DECL(ASYNCHTTP_ENV_COPY_HEADER, "UID=%64u FIELD=%s VALUE=%s");
+FSTRACE_DECL(ASYNCHTTP_ENV_COPY_TRAILER, "UID=%64u FIELD=%s VALUE=%s");
 
 http_env_t *copy_http_env(const http_env_t *envelope)
 {
@@ -202,12 +274,37 @@ http_env_t *copy_http_env(const http_env_t *envelope)
     else copy = make_http_env_response(http_env_get_protocol(envelope),
                                        http_env_get_code(envelope),
                                        http_env_get_explanation(envelope));
-    const char *field, *value;
-    http_env_iter_t *iter = NULL;
-    while ((iter = http_env_get_next_header(envelope, iter, &field, &value)))
-        http_env_add_header(copy, field, value);
-    while ((iter = http_env_get_next_trailer(envelope, iter, &field, &value)))
-        http_env_add_trailer(copy, field, value);
+
+    for (list_elem_t *elem = list_get_first(envelope->headers);
+         elem;
+         elem = list_next(elem)) {
+
+        const httpassoc_t *elem_value =
+            (const httpassoc_t *) list_elem_get_value(elem);
+
+        httpassoc_t *header_copy = copy_assoc(elem_value);
+        list_append(copy->headers, header_copy);
+        FSTRACE(ASYNCHTTP_ENV_COPY_HEADER,
+                copy->uid,
+                header_copy->field,
+                header_copy->value);
+    }
+
+    for (list_elem_t *elem = list_get_first(envelope->trailers);
+         elem;
+         elem = list_next(elem)) {
+
+        const httpassoc_t *elem_value =
+            (const httpassoc_t *) list_elem_get_value(elem);
+
+        httpassoc_t *trailer_copy = copy_assoc(elem_value);
+        list_append(copy->trailers, trailer_copy);
+        FSTRACE(ASYNCHTTP_ENV_COPY_TRAILER,
+                copy->uid,
+                trailer_copy->field,
+                trailer_copy->value);
+    }
+
     http_env_set_final_extensions(copy,
                                   http_env_get_final_extensions(envelope));
     FSTRACE(ASYNCHTTP_ENV_COPY, copy->uid, envelope->uid);
