@@ -14,15 +14,10 @@
 #include <async/tls_connection.h>
 #include <async/tcp_connection.h>
 #include <async/emptystream.h>
-#include <asynchttp/client.h>
+#include <asynchttp/http_op_jockey.h>
 #include <asynchttp/jsonop.h>
 
 static const char *PROGRAM = "webclient";
-
-static void perrmsg(const char *msg)
-{
-    fprintf(stderr, "%s: %s\n", PROGRAM, msg);
-}
 
 typedef struct {
     bool json;
@@ -43,10 +38,8 @@ typedef struct {
     fsadns_t *dns;
     tls_ca_bundle_t *ca_bundle;
     http_client_t *client;
-    http_op_t *request;
+    http_op_jockey_t *jockey;
     jsonop_t *json_request;
-    bytestream_1 content;
-    int response_code;
     bool success;
 } globals_t;
 
@@ -57,53 +50,19 @@ static void close_and_exit(globals_t *g)
     async_quit_loop(g->async);
 }
 
-static void probe_content(globals_t *g)
-{
-    if (!g->request)
-        return;
-    for (;;) {
-        char buf[2000];
-        ssize_t count = bytestream_1_read(g->content, buf, sizeof buf);
-        if (count < 0) {
-            if (errno == EAGAIN)
-                return;
-            perror(PROGRAM);
-            break;
-        }
-        if (count == 0) {
-            if (g->response_code >= 200 && g->response_code <= 399) {
-                g->success = true;
-                fprintf(stderr, "Done!\n");
-            } else fprintf(stderr, "Done (with an error response)!\n");
-            break;
-        }
-        if (write(STDOUT_FILENO, buf, count) != count) {
-            /* Not quite accurate, but oh well... */
-            perrmsg("write failed");
-            break;
-        }
-    }
-    bytestream_1_close(g->content);
-    http_op_close(g->request);
-    g->request = NULL;
-    if (g->success && g->args->spam >= 0)
-        async_timer_start(g->async, async_now(g->async) + g->args->spam,
-                          (action_1) { g, (act_1) get_next });
-    else close_and_exit(g);
-}
-
 static void probe_receive(globals_t *g)
 {
-    if (!g->request)
+    if (!g->jockey)
         return;
-    const http_env_t *envelope = http_op_receive_response(g->request);
-    if (!envelope) {
+    http_op_response_t *response = http_op_jockey_receive_response(g->jockey);
+    if (!response) {
         if (errno == EAGAIN)
             return;
         perror(PROGRAM);
         close_and_exit(g);
         return;
     }
+    const http_env_t *envelope = http_op_response_get_envelope(response);
     fprintf(stderr,
             "Response:\n"
             "Protocol: %s\n"
@@ -112,24 +71,27 @@ static void probe_receive(globals_t *g)
             http_env_get_protocol(envelope),
             http_env_get_code(envelope),
             http_env_get_explanation(envelope));
-    g->response_code = http_env_get_code(envelope);
-    if (http_op_get_response_content(g->request, &g->content) < 0) {
-        perror(PROGRAM);
-        close_and_exit(g);
-        return;
-    }
-    action_1 probe_content_cb = { g, (act_1) probe_content };
-    bytestream_1_register_callback(g->content, probe_content_cb);
-    async_execute(g->async, probe_content_cb);
+    int response_code = http_env_get_code(envelope);
+    if (response_code >= 200 && response_code <= 399) {
+        g->success = true;
+        fprintf(stderr, "Done!\n");
+    } else fprintf(stderr, "Done (with an error response)!\n");
+    http_op_jockey_close(g->jockey);
+    g->jockey = NULL;
+    if (g->success && g->args->spam >= 0)
+        async_timer_start(g->async, async_now(g->async) + g->args->spam,
+                          (action_1) { g, (act_1) get_next });
+    else close_and_exit(g);
 }
 
 static void get_next_raw(globals_t *g)
 {
-    g->request = http_client_make_request(g->client, "GET", g->args->uri);
+    http_op_t *op = http_client_make_request(g->client, "GET", g->args->uri);
     if (g->args->timeout >= 0)
-        http_op_set_timeout(g->request, g->args->timeout * ASYNC_MS);
+        http_op_set_timeout(op, g->args->timeout * ASYNC_MS);
+    g->jockey = make_http_op_jockey(g->async, op, -1);
     action_1 probe_cb = { g, (act_1) probe_receive };
-    http_op_register_callback(g->request, probe_cb);
+    http_op_jockey_register_callback(g->jockey, probe_cb);
     async_execute(g->async, probe_cb);
 }
 
@@ -168,7 +130,6 @@ static void get_next_json(globals_t *g)
 
 static void get_next(globals_t *g)
 {
-    g->response_code = -1;
     g->success = false;
     if (g->args->json)
         get_next_json(g);

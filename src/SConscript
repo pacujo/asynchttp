@@ -15,6 +15,7 @@ env.ParseConfig(env['CONFIG_PARSER'])
 
 env.StaticLibrary('asynchttp',
                   [ 'jsonop.c',
+                    'http_op_jockey.c',
                     'client.c',
                     'connection.c',
                     'framer.c',
