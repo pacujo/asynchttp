@@ -4,6 +4,10 @@
 
 #include <fsdyn/bytearray.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct http_op_jockey http_op_jockey_t;
 typedef struct http_op_response http_op_response_t;
 
@@ -32,3 +36,7 @@ http_op_response_t *http_op_jockey_receive_response(http_op_jockey_t *jockey);
 
 const http_env_t *http_op_response_get_envelope(http_op_response_t *response);
 byte_array_t *http_op_response_release_body(http_op_response_t *response);
+
+#ifdef __cplusplus
+}
+#endif
