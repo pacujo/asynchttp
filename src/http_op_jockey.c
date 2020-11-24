@@ -22,19 +22,6 @@ byte_array_t *http_op_response_release_body(http_op_response_t *response)
     return body;
 }
 
-json_thing_t *http_op_response_release_body_as_json(
-    http_op_response_t *response)
-{
-    json_thing_t *body = NULL;
-    if (response->body) {
-        body = json_utf8_decode(byte_array_data(response->body),
-                                byte_array_size(response->body));
-        destroy_byte_array(response->body);
-        response->body = NULL;
-    }
-    return body;
-}
-
 typedef enum {
     HTTP_OP_JOCKEY_READING_HEADERS,
     HTTP_OP_JOCKEY_READING_BODY,
