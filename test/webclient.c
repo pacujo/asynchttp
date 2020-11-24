@@ -62,6 +62,9 @@ static void probe_receive(globals_t *g)
         close_and_exit(g);
         return;
     }
+    byte_array_t *body = http_op_response_release_body(response);
+    fputs(byte_array_data(body), stdout);
+    destroy_byte_array(body);
     const http_env_t *envelope = http_op_response_get_envelope(response);
     fprintf(stderr,
             "Response:\n"
