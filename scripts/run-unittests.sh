@@ -69,7 +69,7 @@ test-client-file-bundle() {
 }
 
 test-jsonop() {
-    local arch=$1
+    local arch=$1 status
     set +e
     run-test \
         $arch \
@@ -77,8 +77,9 @@ test-jsonop() {
         --json \
         --timeout 1 \
         http://echo.jsontest.com/key/value
-    [ $? -eq 1 ] || return 1
+    status=$?
     set -e
+    [ $status -eq 1 ]
     run-test > stage/$arch/body \
         $arch \
         ./stage/$arch/build/test/webclient \
