@@ -1156,9 +1156,12 @@ static const http_env_t *do_receive(icap_conn_t *conn, http_env_type_t type,
                                           http_response, body_type, body);
         case ICAP_INPUT_PASSING_BODY:
         case ICAP_INPUT_SKIPPING_BODY:
+        case ICAP_INPUT_READING_FINAL_EXTENSIONS:
+        case ICAP_INPUT_SKIPPING_FINAL_EXTENSIONS:
         case ICAP_INPUT_READING_TRAILERS:
         case ICAP_INPUT_SKIPPING_TRAILERS:
         case ICAP_INPUT_AWAITING_BODY_CLOSE:
+        case ICAP_INPUT_AWAITING_UNENCAPSULATED_CLOSE:
             errno = EAGAIN;
             return NULL;
         case ICAP_INPUT_DISCONNECTED:
