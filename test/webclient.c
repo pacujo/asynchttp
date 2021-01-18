@@ -143,8 +143,12 @@ static void get_next(globals_t *g)
 static void get_it(globals_t *g)
 {
     g->client = open_http_client_2(g->async, g->dns);
-    if (g->args->proxy)
-        http_client_set_proxy_from_uri(g->client, g->args->proxy);
+    if (g->args->proxy &&
+        !http_client_set_proxy_from_uri(g->client, g->args->proxy)) {
+        fprintf(stderr, "Failed to set proxy\n");
+        close_and_exit(g);
+        return;
+    }
     if (g->args->unverified) {
         g->ca_bundle = make_unverified_tls_ca_bundle();
         http_client_set_tls_ca_bundle(g->client, g->ca_bundle);

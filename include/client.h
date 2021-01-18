@@ -32,19 +32,29 @@ void http_client_close(http_client_t *client);
  * http_client_make_request() is unspecified. */
 void http_client_set_max_envelope_size(http_client_t *client, size_t size);
 
-/* Set the explicit proxy address. Set proxy_host to NULL (the default)
- * for no proxy. The proxy_host string is only needed for the duration
- * of the call.
+/* Set the explicit proxy address. Set proxy_host to NULL (the
+ * default) for no proxy. If proxy_host, username and password are all
+ * non-NULL, basic proxy authentication is applied. The argument
+ * strings are only needed for the duration of the call.
  *
  * The setting affects subsequent calls to http_client_make_request().
- * Previously initiated operations are unaffected. */
-void http_client_set_proxy(http_client_t *client,
+ * Previously initiated operations are unaffected.
+ *
+ * If proxy_host is not compliant to IDNA requirements, false is
+ * returned and the function has no effect. */
+bool http_client_set_proxy_2(http_client_t *client,
+                             const char *proxy_host, unsigned port,
+                             const char *username, const char *password);
+
+/* Equivalent to
+ * http_client_set_proxy_2(client, proxy_host, port, NULL, NULL). */
+bool http_client_set_proxy(http_client_t *client,
                            const char *proxy_host, unsigned port);
 
 /* Set the proxy address specified in the given URI. The URI must have
  * the following format:
  *
- * ("http" | "https") "://" host [":" port] ["/"]
+ * ("http" | "https") "://" [username:password "@"] host [":" port] ["/"]
  *
  * The default port is 80 and 443 for "http" and "https", respectively.
  *

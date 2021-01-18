@@ -6,6 +6,7 @@
 #include <fsdyn/fsalloc.h>
 #include <fsdyn/charstr.h>
 #include <fsdyn/list.h>
+#include <fsdyn/base64.h>
 #include <async/emptystream.h>
 #include <async/farewellstream.h>
 #include <async/switchstream.h>
@@ -16,7 +17,9 @@
 #include "asynchttp_version.h"
 
 enum {
-    STALE_CONNECTION_TIMEOUT = 10 /* seconds */
+    STALE_CONNECTION_TIMEOUT = 10, /* seconds */
+    DEFAULT_PORT_HTTPS = 443,
+    DEFAULT_PORT_HTTP = 80,
 };
 
 typedef enum {
@@ -36,6 +39,7 @@ struct http_client {
     proxy_mode_t proxy_mode;
     char *proxy_host;           /* NULL if no proxy */
     unsigned proxy_port;
+    char *proxy_authorization;  /* no proxy authorization if NULL */
     tls_ca_bundle_t *ca_bundle;
     action_1 callback;
 };
@@ -112,6 +116,7 @@ struct http_op {
     bool https;
     char *proxy_host;           /* no proxy if NULL */
     unsigned proxy_port;
+    char *proxy_authorization;  /* no proxy authorization if NULL */
     char *host;
     unsigned port;
     char *host_entry;           /* host:port */
@@ -161,7 +166,7 @@ http_client_t *open_http_client_2(async_t *async, fsadns_t *dns)
     client->free_conn_pool = make_list();
     client->max_envelope_size = 100000;
     client->proxy_mode = PROXY_SYSTEM;
-    client->proxy_host = NULL;
+    client->proxy_host = client->proxy_authorization = NULL;
     client->ca_bundle = share_tls_ca_bundle(TLS_SYSTEM_CA_BUNDLE);
     client->callback = NULL_ACTION_1;
     return client;
@@ -220,6 +225,7 @@ static void check_pulse(http_client_t *client)
     flush_free_conn_pool(client);
     destroy_list(client->free_conn_pool);
     fsfree(client->proxy_host);
+    fsfree(client->proxy_authorization);
     destroy_tls_ca_bundle(client->ca_bundle);
     async_wound(client->async, client);
 }
@@ -242,25 +248,64 @@ void http_client_set_max_envelope_size(http_client_t *client, size_t size)
     client->max_envelope_size = size;
 }
 
+static char *make_proxy_authorization(const char *username,
+                                      const char *password)
+{
+    if (!username || !password)
+        return NULL;
+    char *credentials = charstr_printf("%s:%s", username, password);
+    char *encoding =
+        base64_encode_simple(credentials, strlen(credentials));
+    fsfree(credentials);
+    char *auth = charstr_printf("Basic %s", encoding);
+    fsfree(encoding);
+    return auth;
+}
+
+/* proxy_host is moved; username and password are not */
 static void set_proxy(http_client_t *client,
-                      char *proxy_host,
-                      unsigned port)
+                      char *proxy_host, unsigned port,
+                      const char *username, const char *password)
 {
     fsfree(client->proxy_host);
+    fsfree(client->proxy_authorization);
     client->proxy_mode = PROXY_EXPLICIT;
     client->proxy_host = proxy_host;
     client->proxy_port = port;
+    client->proxy_authorization = make_proxy_authorization(username, password);
     flush_free_conn_pool(client);
     prevent_recycling_of_ops_in_flight(client);
 }
 
-FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_PROXY, "UID=%64u HOST=%s PORT=%u");
+FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_PROXY,
+             "UID=%64u HOST=%s PORT=%u USER=%s PASSWORD=%s");
+FSTRACE_DECL(ASYNCHTTP_CLIENT_NON_IDNA_PROXY_HOST, "UID=%64u");
+FSTRACE_DECL(ASYNCHTTP_CLIENT_IDNA_PROXY_HOST, "UID=%64u IDNA=%s");
 
-void http_client_set_proxy(http_client_t *client,
+
+bool http_client_set_proxy_2(http_client_t *client,
+                             const char *proxy_host, unsigned port,
+                             const char *username, const char *password)
+{
+    FSTRACE(ASYNCHTTP_CLIENT_SET_PROXY, client->uid, proxy_host, port,
+            username, password);
+    char *idna = NULL;
+    if (proxy_host) {
+        idna = charstr_idna_encode(proxy_host);
+        if (!idna) {
+            FSTRACE(ASYNCHTTP_CLIENT_NON_IDNA_PROXY_HOST, client->uid);
+            return false;
+        }
+        FSTRACE(ASYNCHTTP_CLIENT_IDNA_PROXY_HOST, client->uid, idna);
+    }
+    set_proxy(client, idna, port, username, password);
+    return true;
+}
+
+bool http_client_set_proxy(http_client_t *client,
                            const char *proxy_host, unsigned port)
 {
-    FSTRACE(ASYNCHTTP_CLIENT_SET_PROXY, client->uid, proxy_host, port);
-    set_proxy(client, charstr_dupstr(proxy_host), port);
+    return http_client_set_proxy_2(client, proxy_host, port, NULL, NULL);
 }
 
 FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_DIRECT, "UID=%64u");
@@ -269,7 +314,8 @@ void http_client_set_direct(http_client_t *client)
 {
     FSTRACE(ASYNCHTTP_CLIENT_SET_DIRECT, client->uid);
     fsfree(client->proxy_host);
-    client->proxy_host = NULL;
+    fsfree(client->proxy_authorization);
+    client->proxy_host = client->proxy_authorization = NULL;
     client->proxy_mode = PROXY_DIRECT;
     flush_free_conn_pool(client);
     prevent_recycling_of_ops_in_flight(client);
@@ -281,7 +327,8 @@ void http_client_use_system_proxy(http_client_t *client)
 {
     FSTRACE(ASYNCHTTP_CLIENT_USE_SYSTEM_PROXY, client->uid);
     fsfree(client->proxy_host);
-    client->proxy_host = NULL;
+    fsfree(client->proxy_authorization);
+    client->proxy_host = client->proxy_authorization = NULL;
     client->proxy_mode = PROXY_SYSTEM;
     flush_free_conn_pool(client);
     prevent_recycling_of_ops_in_flight(client);
@@ -297,108 +344,75 @@ void http_client_set_tls_ca_bundle(http_client_t *client,
     client->ca_bundle = share_tls_ca_bundle(ca_bundle);
 }
 
-static const char *parse_uri_scheme(const char *uri,
-                                    bool *https, unsigned *port)
+static bool percent_decode(const char *encoding, char **decoding)
 {
-    const char *s = charstr_ncase_starts_with(uri, "http://");
-    if (s) {
-        *https = false;
-        *port = 80;
-        return s;
+    if (!encoding) {
+        *decoding = NULL;
+        return true;
     }
-    s = charstr_ncase_starts_with(uri, "https://");
-    if (!s)
-        return NULL;
-    *https = true;
-    *port = 443;
-    return s;
-}
-
-static const char *parse_authority_pass1(const char *s,
-                                         const char **at,
-                                         const char **close_bracket,
-                                         const char **colon)
-{
-    *at = *close_bracket = *colon = NULL;
-    for (; *s && *s != '/'; s++)
-        switch (*s) {
-            case '@':
-                *at = s;
-                break;
-            case ']':
-                *close_bracket = s;
-                break;
-            case ':':
-                *colon = s;
-                break;
-            default:
-                ;
-        }
-    return s;
-}
-
-/* *port is left untouched if it is not explicit in the authority */
-static const char *parse_authority(const char *s, char **host, unsigned *port)
-{
-    /* This parser is rather lax and accepts nonconformant syntax */
-    const char *at, *close_bracket, *colon;
-    const char *path = parse_authority_pass1(s, &at, &close_bracket, &colon);
-    const char *hp = s;
-    if (at)
-        hp = at + 1;
-    if (*hp == '[') {
-        if (!close_bracket)
-            return NULL;
-        if (colon) {
-            if (close_bracket > colon)
-                colon = NULL;
-            else if (colon != close_bracket + 1)
-                return NULL;
-        }
-        *host = charstr_dupsubstr(++hp, close_bracket);
-    } else if (colon)
-        *host = charstr_dupsubstr(hp, colon);
-    else *host = charstr_dupsubstr(hp, path);
-    if (!colon)
-        return path;
-    *port = 0;
-    const char *p;
-    for (p = colon + 1; p < path; p++) {
-        if (!(charstr_char_class(*p) & CHARSTR_DIGIT))
-            return NULL;
-        *port = 10 * *port + *p - '0';
-        if (*port > 65535)
-            return NULL;    /* not really required by the RFC */
+    size_t size;
+    *decoding = charstr_url_decode(encoding, false, &size);
+    if (!*decoding)
+        return false;
+    if (strlen(*decoding) != size) { /* treat %00 as an error */
+        fsfree(*decoding);
+        return false;
     }
-    return path;
+    return true;
 }
 
 FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI, "UID=%64u URI=%s");
-FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_BAD_SCHEME, "UID=%64u URI=%s");
-FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_BAD_AUTHORITY,
+FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_SYNTAX_ERROR,
+             "UID=%64u URI=%s");
+FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_BAD_SCHEME,
+             "UID=%64u URI=%s");
+FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_BAD_USERNAME,
+             "UID=%64u URI=%s");
+FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_BAD_PASSWORD,
              "UID=%64u URI=%s");
 
 bool http_client_set_proxy_from_uri(http_client_t *client, const char *uri)
 {
-    bool https;
-    char *host;
+    nwutil_url_t *url = nwutil_parse_url(uri, strlen(uri), NULL);
+    if (!url) {
+        FSTRACE(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_SYNTAX_ERROR,
+                client->uid, uri);
+        return false;
+    }
+    const char *scheme = nwutil_url_get_scheme(url);
     unsigned port;
-    const char *auth = parse_uri_scheme(uri, &https, &port);
-    if (!auth) {
+    if (!strcmp(scheme, "http"))
+        port = DEFAULT_PORT_HTTP;
+    else if (!strcmp(scheme, "https"))
+        port = DEFAULT_PORT_HTTPS;
+    else {
         FSTRACE(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_BAD_SCHEME,
-                client->uid,
-                uri);
+                client->uid, uri);
+        nwutil_url_destroy(url);
         return false;
     }
-    const char *path = parse_authority(auth, &host, &port);
-    if (!path) {
-        FSTRACE(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_BAD_AUTHORITY,
-                client->uid,
-                uri);
-        return false;
-    }
+    (void) nwutil_url_get_port(url, &port);
     FSTRACE(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI, client->uid, uri);
-    set_proxy(client, host, port);
+    const char *host = nwutil_url_get_host(url);
+    char *username;
+    if (!percent_decode(nwutil_url_get_username(url), &username)) {
+        FSTRACE(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_BAD_USERNAME,
+                client->uid, uri);
+        nwutil_url_destroy(url);
+        return false;
+    }
+    char *password;
+    if (!percent_decode(nwutil_url_get_password(url), &password)) {
+        FSTRACE(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_BAD_PASSWORD,
+                client->uid, uri);
+        fsfree(username);
+        nwutil_url_destroy(url);
+        return false;
+    }
+    set_proxy(client, charstr_dupstr(host), port, username, password);
+    fsfree(password);
+    fsfree(username);
+    nwutil_url_destroy(url);
     return true;
 }
 
@@ -439,35 +453,26 @@ static void set_op_state(http_op_t *op, http_op_state_t state)
     op->state = state;
 }
 
-FSTRACE_DECL(ASYNCHTTP_OP_SET_PROXY,
-             "CLIENT=%64u PROXY-HOST=%s PROXY-PORT=%u");
-
-static void set_op_proxy(http_op_t *op,
-                         const char *proxy_host, unsigned proxy_port)
-{
-    FSTRACE(ASYNCHTTP_OP_SET_PROXY, op->client->uid, proxy_host, proxy_port);
-    op->proxy_host = charstr_dupstr(proxy_host);
-    op->proxy_port = proxy_port;
-}
-
-FSTRACE_DECL(ASYNCHTTP_OP_RESET_PROXY, "CLIENT=%64u");
-
-static void reset_op_proxy(http_op_t *op)
-{
-    FSTRACE(ASYNCHTTP_OP_RESET_PROXY, op->client->uid);
-    op->proxy_host = NULL;
-}
-
+FSTRACE_DECL(ASYNCHTTP_OP_LEARN_PROXY,
+             "CLIENT=%64u PROXY-HOST=%s PROXY-PORT=%u AUTH=%s");
+FSTRACE_DECL(ASYNCHTTP_OP_LEARN_GLOBAL_PROXY,
+             "CLIENT=%64u PROXY-HOST=%s PROXY-PORT=%u AUTH=%s");
 FSTRACE_DECL(ASYNCHTTP_OP_LEARN_PROXY_FAIL, "CLIENT=%64u ERRNO=%e");
 
 static bool learn_op_proxy(http_op_t *op, const char *uri)
 {
-    switch (op->client->proxy_mode) {
+    op->proxy_host = op->proxy_authorization = NULL;
+    http_client_t *client = op->client;
+    switch (client->proxy_mode) {
         case PROXY_DIRECT:
-            reset_op_proxy(op);
             return true;
         case PROXY_EXPLICIT:
-            set_op_proxy(op, op->client->proxy_host, op->client->proxy_port);
+            op->proxy_host = charstr_dupstr(client->proxy_host);
+            op->proxy_port = client->proxy_port;
+            op->proxy_authorization =
+                charstr_dupstr(client->proxy_authorization);
+            FSTRACE(ASYNCHTTP_OP_LEARN_PROXY, client->uid, op->proxy_host,
+                    op->proxy_port, op->proxy_authorization);
             return true;
         default:
             assert(false);
@@ -477,19 +482,69 @@ static bool learn_op_proxy(http_op_t *op, const char *uri)
     nwutil_http_proxy_settings_t *settings =
         nwutil_get_global_http_proxy_settings_1(uri);
     if (!settings) {
-        FSTRACE(ASYNCHTTP_OP_LEARN_PROXY_FAIL, op->client->uid);
+        FSTRACE(ASYNCHTTP_OP_LEARN_PROXY_FAIL, client->uid);
         return false;
     }
-    if (nwutil_use_http_proxy(settings))
-        set_op_proxy(op, nwutil_http_proxy_host(settings),
-                     nwutil_http_proxy_port(settings));
-    else reset_op_proxy(op);
+    if (nwutil_use_http_proxy(settings)) {
+        op->proxy_host = charstr_dupstr(nwutil_http_proxy_host(settings));
+        op->proxy_port = nwutil_http_proxy_port(settings);
+        op->proxy_authorization =
+            make_proxy_authorization(nwutil_http_proxy_user(settings),
+                                     nwutil_http_proxy_password(settings));
+        FSTRACE(ASYNCHTTP_OP_LEARN_GLOBAL_PROXY,
+                client->uid, op->proxy_host,
+                op->proxy_port, op->proxy_authorization);
+    }
     nwutil_release_http_proxy_settings(settings);
     return true;
 }
 
-FSTRACE_DECL(ASYNCHTTP_OP_BAD_URI_SCHEME, "CLIENT=%64u METHOD=%s URI=%s");
-FSTRACE_DECL(ASYNCHTTP_OP_BAD_AUTHORITY, "CLIENT=%64u METHOD=%s URI=%s");
+FSTRACE_DECL(ASYNCHTTP_OP_URI_SYNTAX_ERROR, "CLIENT=%64u URI=%s");
+FSTRACE_DECL(ASYNCHTTP_OP_BAD_URI_SCHEME, "CLIENT=%64u URI=%s");
+
+static bool parse_uri(http_op_t *op, const char *uri)
+{
+    if (!learn_op_proxy(op, uri))
+        return false;
+    nwutil_url_t *url = nwutil_parse_url(uri, strlen(uri), NULL);
+    if (!url) {
+        FSTRACE(ASYNCHTTP_OP_URI_SYNTAX_ERROR, op->client->uid, uri);
+        return false;
+    }
+    const char *scheme = nwutil_url_get_scheme(url);
+    if (!strcmp(scheme, "http")) {
+        op->https = false;
+        op->port = DEFAULT_PORT_HTTP;
+    } else if (!strcmp(scheme, "https")) {
+        op->https = true;
+        op->port = DEFAULT_PORT_HTTPS;
+    } else {
+        FSTRACE(ASYNCHTTP_OP_BAD_URI_SCHEME, op->client->uid, uri);
+        nwutil_url_destroy(url);
+        return false;
+    }
+    (void) nwutil_url_get_port(url, &op->port);
+    /* As allowed by RFC 3986 § 3.2.1, we ignore
+     * nwutil_url_get_username() and nwutil_url_get_password(). */
+    op->host = charstr_dupstr(nwutil_url_get_host(url));
+    if (op->proxy_host && !op->https)
+        op->path = charstr_dupstr(uri);
+    else {
+        const char *q = "?", *query = nwutil_url_get_query(url);
+        if (!query)
+            q = query = "";
+        const char *f = "#", *fragment = nwutil_url_get_fragment(url);
+        if (!fragment)
+            f = fragment = "";
+        op->path =
+            charstr_printf("%s%s%s%s%s",
+                           nwutil_url_get_path(url), q, query, f, fragment);
+    }
+    nwutil_url_destroy(url);
+    return true;
+}
+
+FSTRACE_DECL(ASYNCHTTP_OP_CREATE_FAIL, "CLIENT=%64u METHOD=%s URI=%s");
 FSTRACE_DECL(ASYNCHTTP_OP_CREATE,
              "UID=%64u PTR=%p CLIENT=%64u METHOD=%s URI=%s");
 
@@ -501,21 +556,10 @@ http_op_t *http_client_make_request(http_client_t *client,
     op->uid = fstrace_get_unique_id();
     op->state = HTTP_OP_IDLE;
     op->timer_state = HTTP_OP_TIMER_CANCELED;
-    if (!learn_op_proxy(op, uri)) {
-        fsfree(op);
-        return NULL;
-    }
-    const char *auth = parse_uri_scheme(uri, &op->https, &op->port);
-    if (!auth) {
-        FSTRACE(ASYNCHTTP_OP_BAD_URI_SCHEME, client->uid, method, uri);
+    if (!parse_uri(op, uri)) {
+        FSTRACE(ASYNCHTTP_OP_CREATE_FAIL, client->uid, method, uri);
         fsfree(op->proxy_host);
-        fsfree(op);
-        return NULL;
-    }
-    const char *path = parse_authority(auth, &op->host, &op->port);
-    if (!path) {
-        FSTRACE(ASYNCHTTP_OP_BAD_AUTHORITY, client->uid, method, uri);
-        fsfree(op->proxy_host);
+        fsfree(op->proxy_authorization);
         fsfree(op);
         return NULL;
     }
@@ -523,12 +567,14 @@ http_op_t *http_client_make_request(http_client_t *client,
     op->ca_bundle = share_tls_ca_bundle(client->ca_bundle);
     op->method = charstr_dupstr(method);
     op->loc = list_append(client->operations, op);
-    op->host_entry = charstr_printf("%s:%u", op->host, op->port);
-    if (op->proxy_host && !op->https)
-        op->path = charstr_dupstr(uri);
-    else op->path = charstr_dupstr(path);
+    if (op->port == (op->https ? DEFAULT_PORT_HTTPS : DEFAULT_PORT_HTTP))
+        op->host_entry = charstr_printf("%s", op->host);
+    else op->host_entry = charstr_printf("%s:%u", op->host, op->port);
     op->request = make_http_env_request(op->method, op->path, "HTTP/1.1");
     http_env_add_header(op->request, "Host", op->host_entry);
+    if (op->proxy_authorization && !op->https)
+        http_env_add_header(op->request, "Proxy-Authorization",
+                            op->proxy_authorization);
     op->request_content = emptystream;
     op->content_length = HTTP_ENCODE_RAW;
     op->callback = NULL_ACTION_1;
@@ -702,6 +748,9 @@ static void op_send_http_connect(http_op_t *op)
     http_env_t *connect_request =
         make_http_env_request("CONNECT", op->host_entry, "HTTP/1.1");
     http_env_add_header(connect_request, "Host", op->host_entry);
+    if (op->proxy_authorization)
+        http_env_add_header(connect_request, "Proxy-Authorization",
+                            op->proxy_authorization);
     action_1 request_closed_cb = { connect_request, (act_1) destroy_http_env };
     farewellstream_t *fwstr =
         open_relaxed_farewellstream(op->client->async, emptystream,
@@ -1108,6 +1157,7 @@ static void do_close(http_op_t *op)
 {
     list_remove(op->client->operations, op->loc);
     fsfree(op->proxy_host);
+    fsfree(op->proxy_authorization);
     fsfree(op->host_entry);
     fsfree(op->method);
     fsfree(op->path);
