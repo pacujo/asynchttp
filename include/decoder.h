@@ -5,6 +5,7 @@
 #include <async/bytestream_1.h>
 #include <async/queuestream.h>
 #include "envelope.h"
+#include "api_constants.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,12 +19,6 @@ http_decoder_t *open_http_decoder(async_t *async, bytestream_1 input_stream,
                                   size_t max_envelope_size);
 
 void http_decoder_close(http_decoder_t *decoder);
-
-enum {
-    HTTP_DECODE_CHUNKED = -1,     /* assume chunked encoding */
-    HTTP_DECODE_EXHAUST = -2,     /* content ends with end-of-stream */
-    HTTP_DECODE_OBEY_HEADER = -3  /* inspect headers for content size */
-};
 
 /* Read out the headers of the next HTTP message from the decoder's
  * stream. Return its envelope structure.
@@ -74,7 +69,7 @@ const http_env_t *http_decoder_dequeue(http_decoder_t *decoder,
  * After 'content' returns an end-of-stream, the dequeued envelope may
  * contain trailer fields.
  *
- * Normally, returns a nnonnegative value. If HTTP_DECODE_OBEY_HEADER is
+ * Normally, returns a nonnegative value. If HTTP_DECODE_OBEY_HEADER is
  * specified, http_decoder_get_content() may return a negative number
  * (with errno == EPROTO) as a sign of a fatal protocol error. */
 int http_decoder_get_content(http_decoder_t *decoder, ssize_t content_length,
