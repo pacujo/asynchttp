@@ -15,6 +15,15 @@ include = env.Install(
         '#include/http_op_jockey.h',
         '#include/jsonop.h',
         '#include/icap.h',
+        '#include/h2connection.h',
+        '#include/h2frame.h',
+        '#include/h2frame_constants.h',
+        '#include/h2frame_decoder.h',
+        '#include/h2frame_raw.h',
+        '#include/h2frame_yield.h',
+        '#include/hpack.h',
+        '#include/hpack_integer.h',
+        '#include/hpack_string.h',
     ],
 )
 lib = env.Install('lib', ['../../src/libasynchttp.a'])
