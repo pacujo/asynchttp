@@ -14,7 +14,10 @@ h2conn_t *open_h2connection(async_t *async, bytestream_1 input_stream,
                             bool is_client, size_t max_envelope_size);
 
 /* (Client only.) A connection starts with server push disabled. This
- * function gives the server a permission to push streams. */
+ * function gives the server a permission to push streams.
+ *
+ * Warning: Improper push promise implementations at the client, the
+ * server and this library are a serious security risk. */
 void h2conn_allow_push(h2conn_t *conn);
 
 /* Return a byte stream for interlinking with the transport layer. */
@@ -22,6 +25,7 @@ bytestream_1 h2conn_get_output_stream(h2conn_t *conn);
 
 void h2conn_close(h2conn_t *conn);
 
+/* (Server only.) */
 void h2conn_register_callback(h2conn_t *conn, action_1 action);
 void h2conn_unregister_callback(h2conn_t *conn);
 
@@ -31,7 +35,10 @@ void h2conn_register_peer_closed_callback(h2conn_t *conn, action_1 action);
 void h2conn_unregister_peer_closed_callback(h2conn_t *conn);
 
 /* (Client only.) Initiate an independent HTTP operation (on a new
- * HTTP/2 stream).
+ * HTTP/2 stream). NULL is returned and errno is set if the connection
+ * is not capable of sending a request. Notably, EAGAIN indicates that
+ * too many streams are open and ENOSR indicates that the pool of
+ * stream IDs has been exhausted.
  *
  * The 'content_length' parameter is interpreted as follows:
  *
@@ -57,26 +64,18 @@ h2op_t *h2conn_request(h2conn_t *conn, const http_env_t *envelope,
 /* (Client only.) Initiate a dependent HTTP operation (on a new HTTP/2
  * stream). See h2conn_request() for the possible values of
  * content_length. The weight must be a number between 1 and 256. See
- * RFC 7540 § 5.3.1 for an explanation of the exclusive flag. */
+ * RFC 7540 § 5.3.1 for an explanation of the exclusive flag.
+ *
+ * NULL is returned and errno is set if the connection is not capable
+ * of sending a request. Notably, EAGAIN indicates that too many
+ * streams are open and ENOSR indicates that the pool of stream IDs
+ * has been exhausted. */
 h2op_t *h2op_request(h2op_t *parent, const http_env_t *envelope,
                      ssize_t content_length, bytestream_1 content,
                      bool exclusive, unsigned weight);
 
 void h2op_register_callback(h2op_t *op, action_1 action);
 void h2op_unregister_callback(h2op_t *op);
-
-/* (Client only.) Receive an unsolicited push promise from the server.
- * If NULL is returned, errno is set accordingly, with errno == 0
- * indicating that the server has shut down the connection.
- *
- * If a non-NULL h2op_t value is returned, promise and response
- * deliver the associated headers. The next step is be to call
- * h2op_get_content(). */
-h2op_t *h2conn_receive_promise(h2conn_t *conn, const http_env_t **promise,
-                               const http_env_t **response);
-
-void h2conn_reply(h2op_t *op, const http_env_t *envelope,
-                  ssize_t content_length, bytestream_1 content);
 
 /* (Server only.) Tell if the client allows push promises. The
  * callback (or h2conn_register_callback()) is invoked whenever the
@@ -98,6 +97,9 @@ h2op_t *h2op_push(h2op_t *parent, const http_env_t *promise,
  * case of an error. */
 h2op_t *h2conn_receive_request(h2conn_t *conn, const http_env_t **request);
 
+void h2op_reply(h2op_t *op, const http_env_t *envelope,
+                ssize_t content_length, bytestream_1 content);
+
 /* (Client only.) Receive response headers. If the return value is
  * NULL, consult errno. After a non-NULL envelope is returned by
  * h2op_receive(), subsequent calls to the function return NULL with
@@ -105,9 +107,9 @@ h2op_t *h2conn_receive_request(h2conn_t *conn, const http_env_t **request);
  * is called for the operation. */
 const http_env_t *h2op_receive_response(h2op_t *op);
 
-/* After a non-NULL value is returned from h2op_receive_response(),
- * h2conn_receive_promise() or h2conn_receive_request(), the message
- * body can be read out with h2op_get_content().
+/* After a non-NULL value is returned from h2op_receive_response(), or
+ * h2conn_receive_request(), the message body can be read out with
+ * h2op_get_content().
  *
  * The 'content_length' parameter is interpreted as follows:
  *

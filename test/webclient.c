@@ -64,7 +64,7 @@ static void probe_content(globals_t *g)
             } else fprintf(stderr, "Done (with an error response)!\n");
             break;
         }
-        if (write(STDOUT_FILENO, buf, count) != count) {
+        if (fwrite(buf, count, 1, stdout) != 1) {
             /* Not quite accurate, but oh well... */
             perrmsg("write failed");
             break;

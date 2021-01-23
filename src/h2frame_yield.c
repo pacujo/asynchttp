@@ -1,4 +1,5 @@
 #include <stdbool.h>
+#include <string.h>
 #include <errno.h>
 #include <assert.h>
 #include <fsdyn/fsalloc.h>
@@ -8,6 +9,7 @@
 #include "asynchttp_version.h"
 
 typedef enum {
+    YIELD_READING_PREFIX,
     YIELD_READING_HEADER,
     YIELD_READING_PAYLOAD,
     YIELD_SKIPPING,
@@ -22,6 +24,7 @@ struct h2frame_yield {
     async_t *async;
     uint64_t uid;
     bytestream_1 source;
+    const char *prefix;
     yield_state_t state;
     action_1 callback;
     union {
@@ -40,6 +43,8 @@ struct h2frame_yield {
 static const char *trace_yield_state(void *pstate)
 {
     switch (*(yield_state_t *) pstate) {
+        case YIELD_READING_PREFIX:
+            return "YIELD_READING_PREFIX";
         case YIELD_READING_HEADER:
             return "YIELD_READING_HEADER";
         case YIELD_READING_PAYLOAD:
@@ -76,21 +81,28 @@ FSTRACE_DECL(ASYNCHTTP_H2F_YIELD_PROBE, "UID=%64u");
 static void probe(h2frame_yield_t *yield)
 {
     FSTRACE(ASYNCHTTP_H2F_YIELD_PROBE, yield->uid);
-    if (yield->state == YIELD_READING_HEADER)
-        action_1_perf(yield->callback);
-    else action_1_perf(yield->payload.callback);
+    switch (yield->state) {
+        case YIELD_READING_PREFIX:
+        case YIELD_READING_HEADER:
+            action_1_perf(yield->callback);
+            break;
+        default:
+            action_1_perf(yield->payload.callback);
+    }
 }
 
 FSTRACE_DECL(ASYNCHTTP_H2F_YIELD_CREATE, "UID=%64u PTR=%p ASYNC=%p SOURCE=%p");
 
-h2frame_yield_t *open_h2frame_yield(async_t *async, bytestream_1 source)
+h2frame_yield_t *open_h2frame_yield(async_t *async, bytestream_1 source,
+                                    const char *prefix)
 {
     h2frame_yield_t *yield = fsalloc(sizeof *yield);
     yield->async = async;
     yield->uid = fstrace_get_unique_id();
     FSTRACE(ASYNCHTTP_H2F_YIELD_CREATE, yield->uid, yield, async, source.obj);
     yield->source = source;
-    yield->state = YIELD_READING_HEADER;
+    yield->prefix = prefix;
+    yield->state = YIELD_READING_PREFIX;
     yield->callback = NULL_ACTION_1;
     yield->header.cursor = 0;
     action_1 probe_cb = { yield, (act_1) probe };
@@ -212,7 +224,7 @@ FSTRACE_DECL(ASYNCHTTP_H2F_YIELD_RECEIVE,
 FSTRACE_DECL(ASYNCHTTP_H2F_YIELD_RECEIVE_BAD_EOF, "UID=%64u");
 FSTRACE_DECL(ASYNCHTTP_H2F_YIELD_RECEIVE_FAIL, "UID=%64u ERRNO=%e");
 
-h2frame_raw_t *receive_header(h2frame_yield_t *yield)
+static h2frame_raw_t *receive_header(h2frame_yield_t *yield)
 {
     do {
         size_t remaining = sizeof yield->header.buffer - yield->header.cursor;
@@ -300,6 +312,44 @@ static bool skip(h2frame_yield_t *yield)
     }
 }
 
+FSTRACE_DECL(ASYNCHTTP_H2F_YIELD_SKIP_PREFIX, "UID=%64u PREFIX=%s");
+FSTRACE_DECL(ASYNCHTTP_H2F_YIELD_SKIP_PREFIX_DONE, "UID=%64u");
+FSTRACE_DECL(ASYNCHTTP_H2F_YIELD_SKIP_PREFIX_READ_FAIL, "UID=%64u ERRNO=%e");
+FSTRACE_DECL(ASYNCHTTP_H2F_YIELD_SKIP_PREFIX_READ_EOF, "UID=%64u");
+FSTRACE_DECL(ASYNCHTTP_H2F_YIELD_SKIP_PREFIX_READ_UNEXPECTED,
+             "UID=%64u GOT=%A");
+
+static h2frame_raw_t *skip_prefix(h2frame_yield_t *yield)
+{
+    for (;;) {
+        FSTRACE(ASYNCHTTP_H2F_YIELD_SKIP_PREFIX, yield->uid, yield->prefix);
+        size_t remaining = strlen(yield->prefix);
+        if (!remaining) {
+            FSTRACE(ASYNCHTTP_H2F_YIELD_SKIP_PREFIX_DONE, yield->uid);
+            set_yield_state(yield, YIELD_READING_HEADER);
+            return h2frame_yield_receive(yield);
+        }
+        char buffer[strlen(yield->prefix)];
+        ssize_t count = bytestream_1_read(yield->source, buffer, remaining);
+        if (count < 0) {
+            FSTRACE(ASYNCHTTP_H2F_YIELD_SKIP_PREFIX_READ_FAIL, yield->uid);
+            return NULL;
+        }
+        if (count == 0) {
+            FSTRACE(ASYNCHTTP_H2F_YIELD_SKIP_PREFIX_READ_EOF, yield->uid);
+            set_yield_state(yield, YIELD_READING_ERRORED);
+            return h2frame_yield_receive(yield);
+        }
+        if (memcmp(yield->prefix, buffer, count)) {
+            FSTRACE(ASYNCHTTP_H2F_YIELD_SKIP_PREFIX_READ_UNEXPECTED,
+                    yield->uid, buffer, count);
+            set_yield_state(yield, YIELD_READING_ERRORED);
+            return h2frame_yield_receive(yield);
+        }
+        yield->prefix += count;
+    }
+}
+
 FSTRACE_DECL(ASYNCHTTP_H2F_YIELD_RECEIVE_WHILE_ERRORED, "UID=%64u");
 FSTRACE_DECL(ASYNCHTTP_H2F_YIELD_SPURIOUS_RECEIVE, "UID=%64u");
 
@@ -320,6 +370,8 @@ h2frame_raw_t *h2frame_yield_receive(h2frame_yield_t *yield)
                 FSTRACE(ASYNCHTTP_H2F_YIELD_SPURIOUS_RECEIVE, yield->uid);
                 errno = EAGAIN;
                 return NULL;
+            case YIELD_READING_PREFIX:
+                return skip_prefix(yield);
             case YIELD_READING_HEADER:
                 return receive_header(yield);
             case YIELD_SKIPPING:

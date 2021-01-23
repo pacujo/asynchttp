@@ -22,6 +22,7 @@
 enum {
     LOCAL_INITIAL_WINDOW = 0xffff,
     DEFAULT_WEIGHT = 16,        /* RFC 7540 § 5.3.5 */
+    MAX_NOF_UNCLAIMED_OPS = 200,
 };
 
 typedef enum {
@@ -54,6 +55,7 @@ struct h2conn {
         h2op_t *data_receiver;
         h2frame_t *pending_data;
         size_t pending_credit;
+        uint32_t in_flight;
     } input;
     struct {
         queuestream_t *stream;
@@ -62,6 +64,7 @@ struct h2conn {
         async_event_t *event;
         uint8_t data_chunk[10000];
         int64_t credit;
+        uint32_t in_flight;
     } output;
     hash_table_t *ops;          /* stream_id -> h2op_t */
     avl_tree_t *top_level;      /* of h2op_t */
@@ -77,7 +80,9 @@ typedef enum {
 /* Track what has been delivered to the peer. */
 typedef enum {
     XMIT_PROCESSING,            /* server only */
-    XMIT_SENDING_DATA,
+    XMIT_REQUESTING,            /* client only */
+    XMIT_REPLYING,              /* server only */
+    XMIT_PUSHING,               /* server only */
     XMIT_FINISHED,
 } xmit_state_t;
 
@@ -193,8 +198,12 @@ static const char *trace_xmit_state(void *p)
     switch (*(xmit_state_t *) p) {
         case XMIT_PROCESSING:
             return "XMIT_PROCESSING";
-        case XMIT_SENDING_DATA:
-            return "XMIT_SENDING_DATA";
+        case XMIT_REQUESTING:
+            return "XMIT_REQUESTING";
+        case XMIT_REPLYING:
+            return "XMIT_REPLYING";
+        case XMIT_PUSHING:
+            return "XMIT_PUSHING";
         case XMIT_FINISHED:
             return "XMIT_FINISHED";
         default:
@@ -352,6 +361,83 @@ static void trigger_user(h2op_t *op)
     async_event_trigger(op->api.event);
 }
 
+static bool conn_is_client(h2conn_t *conn)
+{
+    return (conn->next_strid & 1) != 0;
+}
+
+static bool op_is_client(h2op_t *op)
+{
+    return conn_is_client(op->conn);
+}
+
+FSTRACE_DECL(ASYNCHTTP_H2C_CONCLUDE_INPUT_REDUNDANT, "OPID=%s");
+FSTRACE_DECL(ASYNCHTTP_H2C_CONCLUDE_INPUT_REQUEST, "OPID=%s");
+FSTRACE_DECL(ASYNCHTTP_H2C_CONCLUDE_INPUT_PUSH,
+             "OPID=%s INPUT-IN-FLIGHT=%64u");
+FSTRACE_DECL(ASYNCHTTP_H2C_CONCLUDE_INPUT_RESPONSE,
+             "OPID=%s OUTPUT-IN-FLIGHT=%64u");
+
+static void conclude_input(h2op_t *op, recv_state_t state)
+{
+    assert(state == RECV_FINISHED || state == RECV_RESET);
+    switch (op->recv.state) {
+        case RECV_FINISHED:
+        case RECV_RESET:
+            FSTRACE(ASYNCHTTP_H2C_CONCLUDE_INPUT_REDUNDANT, op->opid);
+            return;
+        default:
+            ;
+    }
+    if (!op_is_client(op))
+        FSTRACE(ASYNCHTTP_H2C_CONCLUDE_INPUT_REQUEST, op->opid);
+    else if (op->recv.promise_envelope) {
+        op->conn->input.in_flight--;
+        FSTRACE(ASYNCHTTP_H2C_CONCLUDE_INPUT_PUSH, op->opid,
+                (uint64_t) op->conn->input.in_flight);
+    } else {
+        op->conn->output.in_flight--;
+        FSTRACE(ASYNCHTTP_H2C_CONCLUDE_INPUT_RESPONSE, op->opid,
+                (uint64_t) op->conn->output.in_flight);
+    }
+    set_recv_state(op, state);
+}
+
+FSTRACE_DECL(ASYNCHTTP_H2C_CONCLUDE_OUTPUT_REDUNDANT, "OPID=%s");
+FSTRACE_DECL(ASYNCHTTP_H2C_CONCLUDE_OUTPUT_REQUEST, "OPID=%s");
+FSTRACE_DECL(ASYNCHTTP_H2C_CONCLUDE_OUTPUT_PUSH,
+             "OPID=%s OUTPUT-IN-FLIGHT=%64u");
+FSTRACE_DECL(ASYNCHTTP_H2C_CONCLUDE_OUTPUT_RESPONSE,
+             "OPID=%s INPUT-IN-FLIGHT=%64u");
+
+static void conclude_output(h2op_t *op, xmit_state_t state)
+{
+    /* state is intentionally redundant to make state transitions more
+     * visible in the caller */
+    assert(state == XMIT_FINISHED);
+    switch (op->xmit.state) {
+        case XMIT_FINISHED:
+            FSTRACE(ASYNCHTTP_H2C_CONCLUDE_OUTPUT_REDUNDANT, op->opid);
+            return;
+        case XMIT_REQUESTING:
+            FSTRACE(ASYNCHTTP_H2C_CONCLUDE_OUTPUT_REQUEST, op->opid);
+            break;
+        case XMIT_REPLYING:
+            op->conn->input.in_flight--;
+            FSTRACE(ASYNCHTTP_H2C_CONCLUDE_OUTPUT_RESPONSE, op->opid,
+                    (uint64_t) op->conn->input.in_flight);
+            break;
+        case XMIT_PUSHING:
+            op->conn->output.in_flight--;
+            FSTRACE(ASYNCHTTP_H2C_CONCLUDE_OUTPUT_PUSH, op->opid,
+                    (uint64_t) op->conn->output.in_flight);
+            break;
+        default:
+            assert(false);
+    }
+    set_xmit_state(op, state);
+}
+
 FSTRACE_DECL(ASYNCHTTP_H2C_RESET_OP, "OPID=%s ERR=%I");
 
 static void reset_op(h2op_t *op, uint32_t error_code)
@@ -367,12 +453,14 @@ static void reset_op(h2op_t *op, uint32_t error_code)
         default:
             ;
     }
-    set_recv_state(op, RECV_RESET);
+    conclude_input(op, RECV_RESET);
     op->recv.error_code = error_code;
     switch (op->xmit.state) {
-        case XMIT_SENDING_DATA:
+        case XMIT_REQUESTING:
+        case XMIT_REPLYING:
+        case XMIT_PUSHING:
             bytestream_1_close(op->xmit.content);
-            set_xmit_state(op, XMIT_FINISHED);
+            conclude_output(op, XMIT_FINISHED);
             break;
         case XMIT_FINISHED:
             break;
@@ -784,12 +872,46 @@ static void reprioritize(h2op_t *op, uint32_t parent_strid,
     adopt(op, new_parent, exclusive, weight);
 }
 
+FSTRACE_DECL(ASYNCHTTP_H2C_ISSUE_RESET, "OPID=%s ERR=%I");
+
+static void reset_stream(h2op_t *op, uint32_t error_code)
+{
+    FSTRACE(ASYNCHTTP_H2C_ISSUE_RESET, op->opid, h2frame_trace_error_code,
+            &error_code);
+    h2frame_t rst = {
+        .frame_type = H2FRAME_TYPE_RST_STREAM,
+        .stream_id = op->strid,
+        .rst_stream = {
+            .error_code = error_code
+        }
+    };
+    do_signal(op->conn, &rst);
+}
+
+FSTRACE_DECL(ASYNCHTTP_H2C_ABORT_STREAM, "OPID=%s ERR=%I");
+
+/* For operations not yet delivered to the user */
+static void abort_stream(h2op_t *op, uint32_t error_code)
+{
+    FSTRACE(ASYNCHTTP_H2C_ABORT_STREAM, op->opid, h2frame_trace_error_code,
+            &error_code);
+    reset_stream(op, error_code);
+    conclude_input(op, RECV_FINISHED);
+    conclude_output(op, XMIT_FINISHED);
+}
+
+FSTRACE_DECL(ASYNCHTTP_H2C_TOO_MANY_OPS_PENDING, "OPID=%s");
 FSTRACE_DECL(ASYNCHTTP_H2C_NEW_OP, "OPID=%s");
 FSTRACE_DECL(ASYNCHTTP_H2C_NEW_OP_NOTIFY, "OPID=%s");
 
-static void introduce_new_op(h2op_t *op)
+static void introduce_req(h2op_t *op)
 {
     h2conn_t *conn = op->conn;
+    if (list_size(conn->new_ops) >= MAX_NOF_UNCLAIMED_OPS) {
+        FSTRACE(ASYNCHTTP_H2C_TOO_MANY_OPS_PENDING, op->opid);
+        abort_stream(op, H2FRAME_ERR_REFUSED_STREAM);
+        return;
+    }
     if (list_empty(conn->new_ops)) {
         FSTRACE(ASYNCHTTP_H2C_NEW_OP_NOTIFY, op->opid);
         async_execute(conn->async, conn->input.callback);
@@ -797,21 +919,16 @@ static void introduce_new_op(h2op_t *op)
     list_append(conn->new_ops, op);
 }
 
-static void introduce_op(h2op_t *op)
+static void introduce_push(h2op_t *op)
 {
-    if (op->recv.promise_envelope)
-        introduce_new_op(op);
-    else trigger_user(op);
-}
-
-static bool conn_is_client(h2conn_t *conn)
-{
-    return (conn->next_strid & 1) != 0;
-}
-
-static bool op_is_client(h2op_t *op)
-{
-    return conn_is_client(op->conn);
+    h2conn_t *conn = op->conn;
+    if (list_size(conn->new_ops) >= MAX_NOF_UNCLAIMED_OPS) {
+        FSTRACE(ASYNCHTTP_H2C_TOO_MANY_OPS_PENDING, op->opid);
+        h2op_t *oldest = (h2op_t *) list_pop_first(conn->new_ops);
+        abort_stream(oldest, H2FRAME_ERR_CANCEL);
+    }
+    FSTRACE(ASYNCHTTP_H2C_NEW_OP, op->opid);
+    list_append(conn->new_ops, op);
 }
 
 FSTRACE_DECL(ASYNCHTTP_H2C_HEADER, "OPID=%s NAME=%s VALUE=%s");
@@ -877,13 +994,13 @@ static void receive_headers(h2conn_t *conn, h2frame_t *frame)
                 return;         /* traced */
             if (frame->headers.end_stream) {
                 if (frame->headers.end_headers) {
-                    set_recv_state(op, RECV_FINISHED);
+                    conclude_input(op, RECV_FINISHED);
                     trigger_user(op);
-                } else op->recv.state =
-                           RECV_AWAITING_FINAL_CONTINUATION_HEADER;
+                } else set_recv_state(op,
+                                      RECV_AWAITING_FINAL_CONTINUATION_HEADER);
             } else if (frame->headers.end_headers) {
                 set_recv_state(op, RECV_AWAITING_DATA);
-                introduce_op(op);
+                trigger_user(op);
             }
             else set_recv_state(op, RECV_AWAITING_CONTINUATION_HEADER);
             break;
@@ -900,7 +1017,7 @@ static void receive_headers(h2conn_t *conn, h2frame_t *frame)
             }
             if (frame->headers.end_headers) {
                 trace_trailers(op, op->recv.envelope);
-                set_recv_state(op, RECV_FINISHED);
+                conclude_input(op, RECV_FINISHED);
                 trigger_user(op);
             } else {
                 set_recv_state(op, RECV_AWAITING_CONTINUATION_TRAILER);
@@ -915,8 +1032,7 @@ static void receive_headers(h2conn_t *conn, h2frame_t *frame)
     }
     if (frame->headers.priority)
         reprioritize(op, frame->headers.dependency,
-                     frame->headers.exclusive,
-                     frame->headers.weight);
+                     frame->headers.exclusive, frame->headers.weight);
 }
 
 FSTRACE_DECL(ASYNCHTTP_H2C_GOT_BAD_OP_CONTINUATION, "OPID=%64u/%64u");
@@ -951,8 +1067,10 @@ static void receive_continuation(h2conn_t *conn, h2frame_t *frame)
                             frame->continuation.headers,
                             &op->recv.env_space_remaining,
                             http_env_add_header) &&
-                frame->continuation.end_headers)
+                frame->continuation.end_headers) {
                 set_recv_state(op, RECV_AWAITING_RESPONSE_HEADER);
+                introduce_push(op);
+            }
             break;
         case RECV_AWAITING_CONTINUATION_HEADER:
         case RECV_AWAITING_FINAL_CONTINUATION_HEADER:
@@ -964,8 +1082,8 @@ static void receive_continuation(h2conn_t *conn, h2frame_t *frame)
                 frame->continuation.end_headers) {
                 if (op->recv.state == RECV_AWAITING_CONTINUATION_HEADER)
                     set_recv_state(op, RECV_AWAITING_DATA);
-                else set_recv_state(op, RECV_FINISHED);
-                introduce_op(op);
+                else conclude_input(op, RECV_FINISHED);
+                trigger_user(op);
             }
             break;
         case RECV_AWAITING_CONTINUATION_TRAILER:
@@ -976,7 +1094,7 @@ static void receive_continuation(h2conn_t *conn, h2frame_t *frame)
                             http_env_add_trailer) &&
                 frame->continuation.end_headers) {
                 trace_trailers(op, op->recv.envelope);
-                set_recv_state(op, RECV_FINISHED);
+                conclude_input(op, RECV_FINISHED);
                 trigger_user(op);
             }
             break;
@@ -1022,7 +1140,7 @@ static void receive_data(h2conn_t *conn, h2frame_t *frame)
     FSTRACE(ASYNCHTTP_H2C_GOT_DATA, op->opid, frame->data.data_length,
             op->recv.space_remaining);
     if (frame->data.end_stream)
-        set_recv_state(op, RECV_FINISHED);
+        conclude_input(op, RECV_FINISHED);
     conn->input.pending_data = frame;
     conn->input.data_receiver = op;
 }
@@ -1477,6 +1595,7 @@ FSTRACE_DECL(ASYNCHTTP_H2C_GOT_BAD_PUSH, "OPID=%64u/%64u");
 FSTRACE_DECL(ASYNCHTTP_H2C_GOT_STALE_PUSH, "OPID=%64u/%64u");
 FSTRACE_DECL(ASYNCHTTP_H2C_GOT_PUSH_OUT_OF_ORDER, "OPID=%64u/%64u");
 FSTRACE_DECL(ASYNCHTTP_H2C_GOT_PUSH, "OPID=%64u/%64u PARENT=%64u/%64u");
+FSTRACE_DECL(ASYNCHTTP_H2C_TOO_MANY_STREAMS, "OPID=%s");
 
 static void process_push(h2conn_t *conn, h2frame_t *frame)
 {
@@ -1519,11 +1638,16 @@ static void process_push(h2conn_t *conn, h2frame_t *frame)
     op->xmit.state = XMIT_FINISHED,
     op->recv.promise_envelope = envelope;
     op->recv.env_space_remaining = env_space_remaining;
-    if (frame->push_promise.end_headers)
+    if (frame->push_promise.end_headers) {
         op->recv.state = RECV_AWAITING_RESPONSE_HEADER;
-    else op->recv.state = RECV_AWAITING_CONTINUATION_PROMISE;
+        introduce_push(op);
+    } else op->recv.state = RECV_AWAITING_CONTINUATION_PROMISE;
     op->api.state = API_AWAITING_PROMISE;
     adopt(op, parent, false, DEFAULT_WEIGHT);
+    if (conn->input.in_flight++ >= conn->peer.max_concurrent_streams) {
+        FSTRACE(ASYNCHTTP_H2C_TOO_MANY_STREAMS, op->opid);
+        abort_stream(op, H2FRAME_ERR_REFUSED_STREAM);
+    }
 }
 
 FSTRACE_DECL(ASYNCHTTP_H2C_GOT_REQUEST, "OPID=%64u/%64u PARENT=%64u/%64u");
@@ -1542,20 +1666,24 @@ static void receive_new_request_headers(h2conn_t *conn, h2frame_t *frame)
     op->xmit.envelope = NULL;
     op->xmit.content_length = 0;
     op->xmit.content = emptystream;
-    op->xmit.state = XMIT_FINISHED,
+    op->xmit.state = XMIT_PROCESSING,
     op->recv.envelope = envelope;
     op->recv.env_space_remaining = env_space_remaining;
     if (frame->headers.end_stream) {
         if (frame->headers.end_headers) {
-            set_recv_state(op, RECV_FINISHED);
-            introduce_new_op(op);
+            conclude_input(op, RECV_FINISHED);
+            introduce_req(op);
         } else op->recv.state = RECV_AWAITING_FINAL_CONTINUATION_HEADER;
     } else if (frame->headers.end_headers) {
         set_recv_state(op, RECV_AWAITING_DATA);
-        introduce_new_op(op);
+        introduce_req(op);
     } else set_recv_state(op, RECV_AWAITING_CONTINUATION_HEADER);
     op->api.state = API_AWAITING_REQUEST;
     adopt(op, NULL, false, DEFAULT_WEIGHT);
+    if (conn->input.in_flight++ >= conn->peer.max_concurrent_streams) {
+        FSTRACE(ASYNCHTTP_H2C_TOO_MANY_STREAMS, op->opid);
+        abort_stream(op, H2FRAME_ERR_REFUSED_STREAM);
+    }
 }
 
 static bool conn_ready(h2conn_t *conn)
@@ -1699,7 +1827,7 @@ static void supply_continuation(h2op_t *op, bool end_headers, list_t *headers)
         .frame_type = H2FRAME_TYPE_CONTINUATION,
         .stream_id = op->strid,
         .continuation = {
-            .end_headers = false,
+            .end_headers = end_headers,
             .headers = headers,
         }
     };
@@ -1818,7 +1946,7 @@ static void finish_transmission(h2op_t *op)
                          (void *) hpack_free_header_field, NULL);
             destroy_list(trailers.headers.headers);
             bytestream_1_close(op->xmit.content);
-            set_xmit_state(op, XMIT_FINISHED);
+            conclude_output(op, XMIT_FINISHED);
             return;
         }
     }
@@ -1834,23 +1962,7 @@ static void finish_transmission(h2op_t *op)
     };
     supply_output(conn, h2frame_encode(conn->async, &terminal_data));
     bytestream_1_close(op->xmit.content);
-    set_xmit_state(op, XMIT_FINISHED);
-}
-
-FSTRACE_DECL(ASYNCHTTP_H2C_ISSUE_RESET, "OPID=%s ERR=%I");
-
-static void reset_stream(h2op_t *op, uint32_t error_code)
-{
-    FSTRACE(ASYNCHTTP_H2C_ISSUE_RESET, op->opid, h2frame_trace_error_code,
-            &error_code);
-    h2frame_t rst = {
-        .frame_type = H2FRAME_TYPE_RST_STREAM,
-        .stream_id = op->strid,
-        .rst_stream = {
-            .error_code = error_code
-        }
-    };
-    do_signal(op->conn, &rst);
+    conclude_output(op, XMIT_FINISHED);
 }
 
 FSTRACE_DECL(ASYNCHTTP_H2C_SUPPLY_CONTENT_NO_CREDIT, "OPID=%s");
@@ -1881,7 +1993,7 @@ static bool supply_content(h2op_t *op)
             set_op_state(op, OP_ERRORED);
             reset_stream(op, H2FRAME_ERR_STREAM_CLOSED);
             bytestream_1_close(op->xmit.content);
-            set_xmit_state(op, XMIT_FINISHED);
+            conclude_output(op, XMIT_FINISHED);
             trigger_user(op);
         }
         return false;
@@ -1921,7 +2033,9 @@ static bool op_advance(h2op_t *op)
         case XMIT_FINISHED:
             FSTRACE(ASYNCHTTP_H2C_OP_ADVANCE_NOT_SENDING_DATA, op->opid);
             return false;
-        case XMIT_SENDING_DATA:
+        case XMIT_REQUESTING:
+        case XMIT_REPLYING:
+        case XMIT_PUSHING:
             FSTRACE(ASYNCHTTP_H2C_OP_ADVANCE, op->opid);
             return supply_content(op);
         default:
@@ -2073,7 +2187,10 @@ h2conn_t *open_h2connection(async_t *async, bytestream_1 input_stream,
     conn->peer.initial_window_size = 0xffff;
     conn->peer.max_frame_size = 0x4000;
     conn->peer.max_header_list_size = 0xffffffff;
-    h2frame_yield_t *h2yield = open_h2frame_yield(async, input_stream);
+    const char *H2_SYNC = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+    h2frame_yield_t *h2yield =
+        open_h2frame_yield(async, input_stream,
+                           is_client ? "" : H2_SYNC);
     yield_1 yield = h2frame_yield_as_yield_1(h2yield);
     conn->input.decoder = open_h2frame_decoder(async, yield, 100000);
     action_1 probe_input_cb = { conn, (act_1) probe_input };
@@ -2084,12 +2201,15 @@ h2conn_t *open_h2connection(async_t *async, bytestream_1 input_stream,
     conn->input.hunpack = make_hpack_table();
     conn->input.pending_data = NULL;
     conn->input.pending_credit = 0;
+    conn->input.in_flight = 0;
     conn->output.stream = make_queuestream(async);
     conn->output.credit = 0xffff; /* RFC 7540 § 6.9.2 */
-    stringstream_t *preface =
-        open_stringstream(async, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
-    queuestream_enqueue(conn->output.stream,
-                        stringstream_as_bytestream_1(preface));
+    conn->output.in_flight = 0;
+    if (is_client) {
+        stringstream_t *preface = open_stringstream(async, H2_SYNC);
+        queuestream_enqueue(conn->output.stream,
+                            stringstream_as_bytestream_1(preface));
+    }
     h2frame_t settings = {
         .frame_type = H2FRAME_TYPE_SETTINGS,
         .stream_id = 0,
@@ -2171,6 +2291,10 @@ static bool can_initiate(h2conn_t *conn)
                 errno = ENOSR;
                 return false;
             }
+            if (conn->output.in_flight >= conn->peer.max_concurrent_streams) {
+                errno = EAGAIN;
+                return false;
+            }
             return true;
         case CONN_PASSIVE:
             errno = ECONNREFUSED;
@@ -2200,7 +2324,7 @@ static h2op_t *make_request(h2conn_t *conn, const http_env_t *envelope,
             op->xmit.content_length = content_length;
     }
     op->xmit.content = content;
-    op->xmit.state = XMIT_SENDING_DATA;
+    op->xmit.state = XMIT_REQUESTING;
     op->recv.promise_envelope = NULL;
     op->recv.state = RECV_AWAITING_RESPONSE_HEADER;
     op->api.state = API_AWAITING_RESPONSE;
@@ -2220,7 +2344,105 @@ static const char *trace_content_length(void *p)
     }
 }
 
-FSTRACE_DECL(ASYNCHTTP_H2C_REQUEST_FAIL, "UID=%64u ERRNO=%e");
+static bool match_header(const http_env_t *request,
+                         const http_env_t *promise,
+                         char *name)
+{
+    char *p = name;
+    while (charstr_char_class(*p) & CHARSTR_WHITESPACE)
+        p++;
+    char *q = p + strlen(p);
+    while (p < q && charstr_char_class(q[-1]) & CHARSTR_WHITESPACE)
+        *--q = '\0';
+    if (!strcmp(p, "*")) {
+        fsfree(name);
+        return false;
+    }
+    http_env_iter_t *rqiter = NULL, *priter = NULL;
+    for (;;) {
+        const char *rqval, *prval;
+        rqiter = http_env_get_next_matching_header(request, rqiter, p, &rqval);
+        priter = http_env_get_next_matching_header(request, priter, p, &prval);
+        if (!rqiter || !priter || strcmp(rqval, prval)) {
+            fsfree(name);
+            return !rqiter && !priter;
+        }
+    }
+}
+
+static bool check_vary(const http_env_t *request,
+                       const http_env_t *promise,
+                       const http_env_t *response)
+{
+    const char *vary = http_env_get_matching_header(response, "vary");
+    if (!vary)
+        return true;
+    list_t *names = charstr_split(vary, ',', -1);
+    while (!list_empty(names))
+        if (!match_header(request, promise, (char *) list_pop_first(names))) {
+            while (!list_empty(names))
+                fsfree((char *) list_pop_first(names));
+            destroy_list(names);
+            return false;
+        }
+    destroy_list(names);
+    return true;
+}
+
+FSTRACE_DECL(ASYNCHTTP_H2C_REQUEST_NOT_GET, "UID=%64u METHOD=%s");
+FSTRACE_DECL(ASYNCHTTP_H2C_REQUEST_NO_HOST, "UID=%64u");
+FSTRACE_DECL(ASYNCHTTP_H2C_REQUEST_NO_MATCH, "UID=%64u");
+
+static h2op_t *get_promise(h2conn_t *conn, h2op_t *parent,
+                           const http_env_t *envelope,
+                           ssize_t content_length, bytestream_1 content)
+{
+    if (charstr_case_cmp(http_env_get_method(envelope), "GET")) {
+        FSTRACE(ASYNCHTTP_H2C_REQUEST_NOT_GET, conn->uid,
+                http_env_get_method(envelope));
+        return NULL;
+    }
+    const char *host = http_env_get_matching_header(envelope, "host");
+    if (!host) {
+        FSTRACE(ASYNCHTTP_H2C_REQUEST_NO_HOST, conn->uid);
+        return NULL;
+    }
+    const char *path = http_env_get_path(envelope);
+    list_elem_t *e;
+    for (e = list_get_first(conn->new_ops); e; e = list_next(e)) {
+        h2op_t *op = (h2op_t *) list_elem_get_value(e);
+        switch (op->recv.state) {
+            default:
+                continue;
+            case RECV_AWAITING_DATA:
+            case RECV_AWAITING_CONTINUATION_TRAILER:
+            case RECV_FINISHED:
+                /* we need the response headers to deal with the Vary header */
+                ;
+        }
+        if (parent && op->priority.parent != parent)
+            continue;
+        if (strcmp(path, http_env_get_path(op->recv.promise_envelope)))
+            continue;
+        const char *pushed_host =
+            http_env_get_matching_header(op->recv.promise_envelope, "host");
+        if (strcmp(host, pushed_host))
+            continue;
+        if (!check_vary(envelope,
+                        op->recv.promise_envelope, op->recv.envelope))
+            continue;
+        list_remove(conn->new_ops, e);
+        bytestream_1_close_relaxed(op->conn->async, content);
+        return op;
+    }
+    FSTRACE(ASYNCHTTP_H2C_REQUEST_NO_MATCH, conn->uid);
+    return NULL;
+}
+
+FSTRACE_DECL(ASYNCHTTP_H2C_REQUEST_FAIL,
+             "UID=%64u METHOD=%s PATH=%s LENGTH=%I ERRNO=%e");
+FSTRACE_DECL(ASYNCHTTP_H2C_REQUEST_MATCHES_PROMISE,
+             "OPID=%s METHOD=%s PATH=%s LENGTH=%I");
 FSTRACE_DECL(ASYNCHTTP_H2C_REQUEST, "OPID=%s METHOD=%s PATH=%s LENGTH=%I");
 
 h2op_t *h2conn_request(h2conn_t *conn, const http_env_t *envelope,
@@ -2228,11 +2450,21 @@ h2op_t *h2conn_request(h2conn_t *conn, const http_env_t *envelope,
 {
     assert(conn_is_client(conn));
     assert(http_env_get_type(envelope) == HTTP_ENV_REQUEST);
+    h2op_t *op = get_promise(conn, NULL, envelope, content_length, content);
+    if (op) {
+        FSTRACE(ASYNCHTTP_H2C_REQUEST_MATCHES_PROMISE, op->opid,
+                http_env_get_method(envelope), http_env_get_path(envelope),
+                trace_content_length, &content_length);
+        trace_headers(op, envelope);
+        return op;
+    }
     if (!can_initiate(conn)) {
-        FSTRACE(ASYNCHTTP_H2C_REQUEST_FAIL, conn->uid);
+        FSTRACE(ASYNCHTTP_H2C_REQUEST_FAIL, conn->uid,
+                http_env_get_method(envelope), http_env_get_path(envelope),
+                trace_content_length, &content_length);
         return NULL;
     }
-    h2op_t *op = make_request(conn, envelope, content_length, content);
+    op = make_request(conn, envelope, content_length, content);
     FSTRACE(ASYNCHTTP_H2C_REQUEST, op->opid,
             http_env_get_method(envelope), http_env_get_path(envelope),
             trace_content_length, &content_length);
@@ -2242,7 +2474,12 @@ h2op_t *h2conn_request(h2conn_t *conn, const http_env_t *envelope,
     return op;
 }
 
-FSTRACE_DECL(ASYNCHTTP_H2C_REQUEST_DEPENDENT_FAIL, "PARENT=%s ERRNO=%e");
+FSTRACE_DECL(ASYNCHTTP_H2C_REQUEST_DEPENDENT_FAIL,
+             "PARENT=%s METHOD=%s PATH=%s LENGTH=%I "
+             "EXCL=%b WEIGHT=%u ERRNO=%e");
+FSTRACE_DECL(ASYNCHTTP_H2C_REQUEST_DEPENDENT_MATCHES_PROMISE,
+             "OPID=%s PARENT=%s METHOD=%s PATH=%s LENGTH=%I "
+             "EXCL=%b WEIGHT=%u");
 FSTRACE_DECL(ASYNCHTTP_H2C_REQUEST_DEPENDENT,
              "OPID=%s PARENT=%s METHOD=%s PATH=%s LENGTH=%I "
              "EXCL=%b WEIGHT=%u");
@@ -2252,12 +2489,23 @@ h2op_t *h2op_request(h2op_t *parent, const http_env_t *envelope,
                      bool exclusive, unsigned weight)
 {
     assert(conn_is_client(parent->conn));
-    if (!can_initiate(parent->conn)) {
-        FSTRACE(ASYNCHTTP_H2C_REQUEST_DEPENDENT_FAIL, parent->opid);
-        return NULL;
+    h2op_t *op = get_promise(parent->conn, parent, envelope,
+                             content_length, content);
+    if (op) {
+        FSTRACE(ASYNCHTTP_H2C_REQUEST_DEPENDENT_MATCHES_PROMISE,
+                op->opid, parent->opid, http_env_get_method(envelope),
+                http_env_get_path(envelope),
+                trace_content_length, &content_length, exclusive, weight);
+        trace_headers(op, envelope);
+        return op;
     }
-    h2op_t *op =
-        make_request(parent->conn, envelope, content_length, content);
+    if (!can_initiate(op->conn)) {
+        FSTRACE(ASYNCHTTP_H2C_REQUEST_DEPENDENT_FAIL, parent->opid,
+                http_env_get_method(envelope), http_env_get_path(envelope),
+                trace_content_length, &content_length, exclusive, weight);
+        return false;
+    }
+    op = make_request(parent->conn, envelope, content_length, content);
     FSTRACE(ASYNCHTTP_H2C_REQUEST_DEPENDENT, op->opid, parent->opid,
             http_env_get_method(envelope), http_env_get_path(envelope),
             trace_content_length, &content_length, exclusive, weight);
@@ -2280,8 +2528,8 @@ static void issue_response(h2op_t *op)
 FSTRACE_DECL(ASYNCHTTP_H2C_REPLY, "OPID=%s STATUS=%d LENGTH=%I");
 FSTRACE_DECL(ASYNCHTTP_H2C_REPLY_HEADER, "OPID=%s NAME=%s VALUE=%s");
 
-void h2conn_reply(h2op_t *op, const http_env_t *envelope,
-                  ssize_t content_length, bytestream_1 content)
+void h2op_reply(h2op_t *op, const http_env_t *envelope,
+                ssize_t content_length, bytestream_1 content)
 {
     assert(!op_is_client(op));
     assert(op->state == OP_LIVE);
@@ -2290,7 +2538,7 @@ void h2conn_reply(h2op_t *op, const http_env_t *envelope,
     FSTRACE(ASYNCHTTP_H2C_REPLY, op->opid, http_env_get_code(envelope),
             trace_content_length, &content_length);
     trace_headers(op, envelope);
-    set_xmit_state(op, XMIT_SENDING_DATA);
+    set_xmit_state(op, XMIT_REPLYING);
     op->xmit.envelope = envelope;
     switch (content_length) {
         case HTTP_ENCODE_CHUNKED:
@@ -2320,7 +2568,7 @@ static h2op_t *make_push(h2conn_t *conn, const http_env_t *response,
     op->xmit.envelope = response;
     op->xmit.content_length = content_length;
     op->xmit.content = content;
-    op->xmit.state = XMIT_SENDING_DATA;
+    op->xmit.state = XMIT_PUSHING;
     op->recv.promise_envelope = NULL;
     op->recv.state = RECV_FINISHED;
     op->api.state = API_CONTENT_CLOSED;
@@ -2352,10 +2600,6 @@ h2op_t *h2op_push(h2op_t *parent, const http_env_t *promise,
     assert(!conn_is_client(conn));
     if (!h2conn_can_push(conn)) {
         errno = EPERM;
-        FSTRACE(ASYNCHTTP_H2C_PUSH_NOT_ALLOWED, conn->uid);
-        return NULL;
-    }
-    if (!can_initiate(conn)) {
         FSTRACE(ASYNCHTTP_H2C_PUSH_NOT_ALLOWED, conn->uid);
         return NULL;
     }
@@ -2447,16 +2691,13 @@ FSTRACE_DECL(ASYNCHTTP_H2C_RECEIVE_RESPONSE, "OPID=%s STATUS=%d");
 const http_env_t *h2op_receive_response(h2op_t *op)
 {
     assert(op_is_client(op));
-    if (!alive_and_well(op)) {
-        FSTRACE(ASYNCHTTP_H2C_RECEIVE_RESPONSE_FAIL, op->opid);
-        return NULL;
-    }
     switch (op->recv.state) {
         case RECV_AWAITING_RESPONSE_HEADER:
         case RECV_AWAITING_CONTINUATION_HEADER:
         case RECV_AWAITING_FINAL_CONTINUATION_HEADER:
         case RECV_AWAITING_CONTINUATION_TRAILER:
-            errno = EAGAIN;
+            if (alive_and_well(op))
+                errno = EAGAIN;
             FSTRACE(ASYNCHTTP_H2C_RECEIVE_RESPONSE_FAIL, op->opid);
             return NULL;
         case RECV_AWAITING_DATA:
@@ -2471,7 +2712,8 @@ const http_env_t *h2op_receive_response(h2op_t *op)
                     set_api_state(op, API_ENVELOPE_PASSED);
                     return op->recv.envelope;
                 default:
-                    errno = EAGAIN;
+                    if (alive_and_well(op))
+                        errno = EAGAIN;
                     FSTRACE(ASYNCHTTP_H2C_RECEIVE_RESPONSE_FAIL, op->opid);
                     return NULL;
             }
@@ -2497,15 +2739,14 @@ static ssize_t _read_body_content(void *obj, void *buf, size_t count)
     if (count == 0)
         return 0;
     h2op_t *op = obj;
-    if (!alive_and_well(op))
-        return -1;
     count = cap_readable(op, count);
     switch (op->recv.state) {
         case RECV_AWAITING_DATA:
         case RECV_AWAITING_CONTINUATION_TRAILER:
-            assert (op->api.state == API_CONTENT_PASSED);
+            assert(op->api.state == API_CONTENT_PASSED);
             if (count == 0) {
-                errno = EAGAIN;
+                if (alive_and_well(op))
+                    errno = EAGAIN;
                 return -1;
             }
             break;
@@ -2526,7 +2767,8 @@ static ssize_t _read_body_content(void *obj, void *buf, size_t count)
     if (op->recv.read_cursor == LOCAL_INITIAL_WINDOW)
         op->recv.read_cursor = 0;
     op->recv.space_remaining += count;
-    award_op_credit(op, count);
+    if (alive_and_well(op))
+        award_op_credit(op, count);
     return count;
 }
 
@@ -2587,16 +2829,12 @@ FSTRACE_DECL(ASYNCHTTP_H2C_GET_CONTENT, "OPID=%s LENGTH=%I");
 
 int h2op_get_content(h2op_t *op, ssize_t content_length, bytestream_1 *content)
 {
-    assert(op_is_client(op));
-    if (!alive_and_well(op)) {
-        FSTRACE(ASYNCHTTP_H2C_GET_CONTENT_FAIL, op->opid);
-        return -1;
-    }
     switch (op->recv.state) {
         case RECV_AWAITING_RESPONSE_HEADER:
         case RECV_AWAITING_CONTINUATION_HEADER:
         case RECV_AWAITING_FINAL_CONTINUATION_HEADER:
-            errno = EAGAIN;
+            if (alive_and_well(op))
+                errno = EAGAIN;
             FSTRACE(ASYNCHTTP_H2C_GET_CONTENT_FAIL, op->opid);
             return -1;
         case RECV_AWAITING_DATA:
@@ -2612,7 +2850,8 @@ int h2op_get_content(h2op_t *op, ssize_t content_length, bytestream_1 *content)
                     content->vt = &h2body_vt;
                     return 0;
                 default:
-                    errno = EAGAIN;
+                    if (alive_and_well(op))
+                        errno = EAGAIN;
                     FSTRACE(ASYNCHTTP_H2C_GET_CONTENT_FAIL, op->opid);
                     return -1;
             }            
@@ -2621,43 +2860,40 @@ int h2op_get_content(h2op_t *op, ssize_t content_length, bytestream_1 *content)
     }
 }
 
-FSTRACE_DECL(ASYNCHTTP_H2C_RECEIVE_PROMISE_FAIL, "UID=%64u ERRNO=%e");
-FSTRACE_DECL(ASYNCHTTP_H2C_RECEIVE_PROMISE, "OPID=%s STATUS=%d");
-FSTRACE_DECL(ASYNCHTTP_H2C_RECEIVE_PROMISE_RESPONSE, "OPID=%s STATUS=%d");
-
-h2op_t *h2conn_receive_promise(h2conn_t *conn, const http_env_t **promise,
-                               const http_env_t **response)
-{
-    assert(conn_is_client(conn));
-    switch (conn->state) {
-        case CONN_ERRORED:
-            errno = ENOTCONN;
-            FSTRACE(ASYNCHTTP_H2C_RECEIVE_PROMISE_FAIL, conn->uid);
-            return NULL;
-        case CONN_ZOMBIE:
-            errno = EBADF;
-            FSTRACE(ASYNCHTTP_H2C_RECEIVE_PROMISE_FAIL, conn->uid);
-            return NULL;
-        default:
-            if (list_empty(conn->new_ops)) {
-                errno = EAGAIN;
-                FSTRACE(ASYNCHTTP_H2C_RECEIVE_PROMISE_FAIL, conn->uid);
-                return NULL;
-            }
-    }
-    h2op_t *op = (h2op_t *) list_pop_first(conn->new_ops);
-    *promise = op->recv.promise_envelope;
-    *response = op->recv.envelope;
-    FSTRACE(ASYNCHTTP_H2C_RECEIVE_PROMISE, op->opid,
-            http_env_get_method(*promise),
-            http_env_get_path(*promise));
-    trace_headers(op, *promise);
-    FSTRACE(ASYNCHTTP_H2C_RECEIVE_PROMISE_RESPONSE, op->opid,
-            http_env_get_code(*response));
-    trace_headers(op, *response);
-    set_api_state(op, API_ENVELOPE_PASSED);
-    return op;
-}
+#if 0
+//FSTRACE_DECL(ASYNCHTTP_H2C_RECEIVE_PROMISE_FAIL, "UID=%64u ERRNO=%e");
+//FSTRACE_DECL(ASYNCHTTP_H2C_RECEIVE_PROMISE, "OPID=%s STATUS=%d");
+//FSTRACE_DECL(ASYNCHTTP_H2C_RECEIVE_PROMISE_RESPONSE, "OPID=%s STATUS=%d");
+//
+//h2op_t *h2conn_receive_promise(h2conn_t *conn, const http_env_t **promise)
+//{
+//    assert(conn_is_client(conn));
+//    switch (conn->state) {
+//        case CONN_ERRORED:
+//            errno = ENOTCONN;
+//            FSTRACE(ASYNCHTTP_H2C_RECEIVE_PROMISE_FAIL, conn->uid);
+//            return NULL;
+//        case CONN_ZOMBIE:
+//            errno = EBADF;
+//            FSTRACE(ASYNCHTTP_H2C_RECEIVE_PROMISE_FAIL, conn->uid);
+//            return NULL;
+//        default:
+//            if (list_empty(conn->new_ops)) {
+//                errno = EAGAIN;
+//                FSTRACE(ASYNCHTTP_H2C_RECEIVE_PROMISE_FAIL, conn->uid);
+//                return NULL;
+//            }
+//    }
+//    h2op_t *op = (h2op_t *) list_pop_first(conn->new_ops);
+//    *promise = op->recv.promise_envelope;
+//    FSTRACE(ASYNCHTTP_H2C_RECEIVE_PROMISE, op->opid,
+//            http_env_get_method(*promise),
+//            http_env_get_path(*promise));
+//    trace_headers(op, *promise);
+//    set_api_state(op, API_AWAITING_RESPONSE);
+//    return op;
+//}
+#endif
 
 void h2op_register_callback(h2op_t *op, action_1 action)
 {
@@ -2671,11 +2907,13 @@ void h2op_unregister_callback(h2op_t *op)
 
 void h2conn_register_callback(h2conn_t *conn, action_1 action)
 {
+    assert(!conn_is_client(conn));
     conn->input.callback = action;
 }
 
 void h2conn_unregister_callback(h2conn_t *conn)
 {
+    assert(!conn_is_client(conn));
     conn->input.callback = NULL_ACTION_1;
 }
 
@@ -2712,7 +2950,12 @@ void h2op_close(h2op_t *op)
     set_op_state(op, OP_ZOMBIE);
     if (op->xmit.state != XMIT_FINISHED) {
         bytestream_1_close(op->xmit.content);
-        set_xmit_state(op, XMIT_FINISHED);
+        assert(false);
+#if 0
+        ... no, no, you gotta deliver the goods ...;
+        ... provide a way to disconnect the whole connection immediately ...;
+#endif
+        conclude_output(op, XMIT_FINISHED);
     }
     if (op->api.state != API_CONTENT_CLOSED)
         reset_stream(op, H2FRAME_ERR_STREAM_CLOSED);

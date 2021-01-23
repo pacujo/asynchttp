@@ -61,7 +61,9 @@ static size_t encode_headers(async_t *async, list_t *headers,
     uint8_t *p = buffer, *end = buffer + total_size;
     for (e = list_get_first(headers); e; e = list_next(e))
         p += hpack_encode_header_field(list_elem_get_value(e), p, end - p);
-    blobstream_t *blobstr = copy_blobstream(async, buffer, total_size);
+    action_1 free_cb = { buffer, (act_1) fsfree };
+    blobstream_t *blobstr =
+        adopt_blobstream(async, buffer, total_size, free_cb);
     *pstream = blobstream_as_bytestream_1(blobstr);
     return total_size;
 }

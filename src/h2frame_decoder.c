@@ -480,16 +480,14 @@ static h2frame_t *decode_ping(h2frame_decoder_t *decoder)
     if (get_payload_length(decoder) != 8)
         return decoding_error(decoder);
     bool ack = get_flag(decoder, H2FRAME_FLAG_ACK);
-    uint8_t data[8];
-    memcpy(data, decoder->decoding.buffer, sizeof data);
-    uint32_t stream_id = get_stream_id(decoder);
-    clear_payload(decoder);
-    set_decoder_state(decoder, DECODER_RECEIVING);
+
     h2frame_t *frame = fsalloc(sizeof *frame);
     frame->frame_type = H2FRAME_TYPE_PING;
-    frame->stream_id = stream_id;
+    frame->stream_id = get_stream_id(decoder);
     frame->ping.ack = ack;
-    memcpy(frame->ping.data, data, sizeof data);
+    memcpy(frame->ping.data, decoder->decoding.buffer, 8);
+    clear_payload(decoder);
+    set_decoder_state(decoder, DECODER_RECEIVING);
     FSTRACE(ASYNCHTTP_H2F_DECODER_GOT_PING, decoder->uid, frame,
             (uint64_t) frame->stream_id, frame->ping.ack,
             frame->ping.data, sizeof frame->ping.data);

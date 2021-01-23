@@ -89,7 +89,8 @@ typedef enum {
     HTTP_OP_STREAMING,
     HTTP_OP_STREAM_CLOSED,
     HTTP_OP_CLOSED_STREAMING,
-    HTTP_OP_CLOSED
+    HTTP_OP_CLOSED,
+    HTTP_OP_ERRORED
 } http_op_state_t;
 
 /*
@@ -132,6 +133,7 @@ struct http_op {
     char *host;
     unsigned port;
     char *host_entry;           /* host:port */
+    bool reusing;
     char *method;
     char *path;
     http_env_t *request;
@@ -141,6 +143,7 @@ struct http_op {
     /* HTTP_OP_IDLE, HTTP_OP_CONNECTING_DIRECTLY,
      * HTTP_OP_CONNECTING_TO_PROXY, HTTP_OP_TUNNELING, HTTP_OP_NEGOTIATING */
     bytestream_1 request_content;
+    switchstream_t *request_swstr;
 
     /* HTTP_OP_CONNECTING_DIRECTLY, HTTP_OP_CONNECTING_TO_PROXY */
     tcp_client_t *tcp_client;
@@ -154,6 +157,9 @@ struct http_op {
 
     /* HTTP_OP_STREAMING, HTTP_OP_CLOSED_STREAMING */
     bytestream_1 response_content;
+
+    /* HTTP_OP_ERRORED */
+    int err;
 };
 
 static const char *trace_pe_state(void *p)
@@ -274,11 +280,12 @@ static void taint_pool_element(pool_elem_t *pe)
             detach_pool_element(pe);
             set_pe_state(pe, POOL_ELEM_TAKEN_TAINTED);
             break;
+        case POOL_ELEM_LOOSE:
         case POOL_ELEM_SHARED_TAINTED:
         case POOL_ELEM_TAKEN_TAINTED:
             break;
         default:
-            abort();
+            assert(false);
     }
 }
 
@@ -542,6 +549,8 @@ static const char *trace_state(void *pstate)
             return "HTTP_OP_CLOSED_STREAMING";
         case HTTP_OP_CLOSED:
             return "HTTP_OP_CLOSED";
+        case HTTP_OP_ERRORED:
+            return "HTTP_OP_ERRORED";
         default:
             return "?";
     }
@@ -644,9 +653,16 @@ http_op_t *http_client_make_request(http_client_t *client,
     if (op->proxy_host && !op->https)
         op->path = charstr_dupstr(uri);
     else op->path = charstr_dupstr(path);
+    op->reusing = false;
     op->request = make_http_env_request(op->method, op->path, "HTTP/1.1");
     http_env_add_header(op->request, "Host", op->host_entry);
-    op->request_content = emptystream;
+    op->request_swstr = open_switch_stream(op->client->async, emptystream);
+    bytestream_1 swbytes = switchstream_as_bytestream_1(op->request_swstr);
+    action_1 request_closed_cb = { op->request, (act_1) destroy_http_env };
+    farewellstream_t *fwstr =
+        open_relaxed_farewellstream(op->client->async, swbytes,
+                                    request_closed_cb);
+    op->request_content = farewellstream_as_bytestream_1(fwstr);
     op->content_length = HTTP_ENCODE_RAW;
     op->callback = NULL_ACTION_1;
     return op;
@@ -657,7 +673,7 @@ FSTRACE_DECL(ASYNCHTTP_OP_SET_CONTENT, "UID=%64u CONTENT=%p");
 void http_op_set_content(http_op_t *op, ssize_t size, bytestream_1 content)
 {
     FSTRACE(ASYNCHTTP_OP_SET_CONTENT, op->uid, content.obj);
-    op->request_content = content;
+    bytestream_1_close(switchstream_reattach(op->request_swstr, content));
     op->content_length = size;
 }
 
@@ -686,7 +702,7 @@ static bool reuse_connection(http_op_t *op, const char *host, unsigned port,
         pool_elem_t *pe = (pool_elem_t *) avl_elem_get_value(e);
         if (strcmp(pe->key.host, host) || pe->key.port != port ||
             pe->key.https != https)
-            break;
+            continue;
         switch (pe->state) {
             case POOL_ELEM_IDLE:
                 if (tls_ca_bundle_equal(pe->ca_bundle, op->ca_bundle)) {
@@ -737,17 +753,26 @@ static action_1 get_op_cb(http_op_t *op)
 static void op_dispatch(http_op_t *op)
 {
     /* op->pe has been set by the caller */
-    action_1 request_closed_cb = { op->request, (act_1) destroy_http_env };
-    farewellstream_t *fwstr =
-        open_relaxed_farewellstream(op->client->async, op->request_content,
-                                    request_closed_cb);
-    bytestream_1 content = farewellstream_as_bytestream_1(fwstr);
     if (op->pe->h2conn) {
         op->h2op = h2conn_request(op->pe->h2conn, op->request,
-                                  op->content_length, content);
+                                  op->content_length, op->request_content);
+        if (!op->h2op) {
+            taint_pool_element(op->pe);
+            if (op->reusing) {
+                op->reusing = false;
+                set_op_state(op, HTTP_OP_IDLE);
+                return;
+            }
+            /* We were trying a brand new connection and failed; it's
+             * a lost cause. */
+            op->err = errno;
+            set_op_state(op, HTTP_OP_ERRORED);
+            return;
+        }
         h2op_register_callback(op->h2op, get_op_cb(op));
     } else {
-        http_send(op->pe->http_conn, op->request, op->content_length, content);
+        http_send(op->pe->http_conn, op->request, op->content_length,
+                  op->request_content);
         http_register_callback(op->pe->http_conn, get_op_cb(op));
     }
     set_op_state(op, HTTP_OP_SENT);
@@ -777,11 +802,13 @@ static void op_send_request_via_proxy(http_op_t *op)
 {
     if (op->https && reuse_connection(op, op->host, op->port, op->https)) {
         FSTRACE(ASYNCHTTP_OP_SEND_VIA_PROXY_REUSE_HTTPS, op->uid);
+        op->reusing = true;
         op_dispatch(op);
         return;
     }
     if (reuse_connection(op, op->proxy_host, op->proxy_port, false)) {
         FSTRACE(ASYNCHTTP_OP_SEND_VIA_PROXY_REUSING, op->uid);
+        op->reusing = true;
         if (op->https)
             op_send_http_connect(op);
         else op_dispatch(op);
@@ -807,6 +834,7 @@ static void op_send_request(http_op_t *op)
     }
     if (reuse_connection(op, op->host, op->port, op->https)) {
         FSTRACE(ASYNCHTTP_OP_SEND_REUSING, op->uid);
+        op->reusing = true;
         op_dispatch(op);
         return;
     }
@@ -980,7 +1008,6 @@ static void op_push_h2_over_tls(http_op_t *op)
                                    op->client->max_envelope_size);
     bytestream_1 h2output = h2conn_get_output_stream(pe->h2conn);
     tls_set_plain_output_stream(pe->tls_conn, h2output);
-    h2conn_register_callback(pe->h2conn, get_op_cb(op));
     add_connection_to_pool(op, true);
     FSTRACE(ASYNCHTTP_OP_PUSH_H2LAYER, op->uid, pe->h2conn);
 }
@@ -1068,6 +1095,7 @@ FSTRACE_DECL(ASYNCHTTP_OP_RECEIVE_VIA_PROXY, "UID=%64u");
 FSTRACE_DECL(ASYNCHTTP_OP_RECEIVE_TUNNELING, "UID=%64u");
 FSTRACE_DECL(ASYNCHTTP_OP_RECEIVE_NEGOTIATING, "UID=%64u");
 FSTRACE_DECL(ASYNCHTTP_OP_RECEIVE_SENT, "UID=%64u");
+FSTRACE_DECL(ASYNCHTTP_OP_RECEIVE_ERRORED, "UID=%64u");
 FSTRACE_DECL(ASYNCHTTP_OP_RECEIVE_EOF, "UID=%64u");
 FSTRACE_DECL(ASYNCHTTP_OP_RECEIVED, "UID=%64u RESPONSE=%p ERRNO=%e");
 
@@ -1099,6 +1127,11 @@ const http_env_t *http_op_receive_response(http_op_t *op)
         case HTTP_OP_SENT:
             FSTRACE(ASYNCHTTP_OP_RECEIVE_SENT, op->uid);
             response = op_receive_response(op);
+            break;
+        case HTTP_OP_ERRORED:
+            FSTRACE(ASYNCHTTP_OP_RECEIVE_ERRORED, op->uid);
+            errno = op->err;
+            response = NULL;
             break;
         default:
             FSTRACE(ASYNCHTTP_OP_RECEIVE_EOF, op->uid);
@@ -1260,6 +1293,7 @@ static void do_close(http_op_t *op)
     fsfree(op->host);
     switch (op->state) {
         case HTTP_OP_IDLE:
+        case HTTP_OP_ERRORED:
             clear_request(op);
             break;
         case HTTP_OP_CONNECTING_DIRECTLY:

@@ -42,3 +42,5 @@ env.Program('icapscan',
 env.Program('jsonop-request-quick-close', ['jsonop-request-quick-close.c'])
 
 env.Program('h2test', [ 'h2test.c' ])
+
+env.Program('h2server', [ 'h2server.c' ])

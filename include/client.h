@@ -97,7 +97,8 @@ void http_op_set_content(http_op_t *op, ssize_t content_length,
 
 /* Get the request envelope. It can be modified until
  * http_op_receive_response() is called on the operation for the first
- * time. */
+ * time. The caller is responsible for keeping the added headers and
+ * trailers valid until the request content is closed. */
 http_env_t *http_op_get_request_envelope(http_op_t *op);
 
 /* Check if the server has responded to the request. If the return value
