@@ -567,9 +567,7 @@ http_op_t *http_client_make_request(http_client_t *client,
     op->ca_bundle = share_tls_ca_bundle(client->ca_bundle);
     op->method = charstr_dupstr(method);
     op->loc = list_append(client->operations, op);
-    if (op->port == (op->https ? DEFAULT_PORT_HTTPS : DEFAULT_PORT_HTTP))
-        op->host_entry = charstr_printf("%s", op->host);
-    else op->host_entry = charstr_printf("%s:%u", op->host, op->port);
+    op->host_entry = charstr_printf("%s:%u", op->host, op->port);
     op->request = make_http_env_request(op->method, op->path, "HTTP/1.1");
     http_env_add_header(op->request, "Host", op->host_entry);
     if (op->proxy_authorization && !op->https)
