@@ -119,7 +119,8 @@ struct http_op {
     char *proxy_authorization;  /* no proxy authorization if NULL */
     char *host;
     unsigned port;
-    char *host_entry;           /* host:port */
+    char *host_entry;           /* host[:port] */
+    char *connect_entry;        /* host:port or NULL*/
     char *method;
     char *path;
     http_env_t *request;
@@ -527,6 +528,7 @@ static bool parse_uri(http_op_t *op, const char *uri)
     /* As allowed by RFC 3986 § 3.2.1, we ignore
      * nwutil_url_get_username() and nwutil_url_get_password(). */
     op->host = charstr_dupstr(nwutil_url_get_host(url));
+    op->host_entry = charstr_dupstr(nwutil_url_get_host_header(url));
     if (op->proxy_host && !op->https)
         op->path = charstr_dupstr(uri);
     else {
@@ -567,7 +569,6 @@ http_op_t *http_client_make_request(http_client_t *client,
     op->ca_bundle = share_tls_ca_bundle(client->ca_bundle);
     op->method = charstr_dupstr(method);
     op->loc = list_append(client->operations, op);
-    op->host_entry = charstr_printf("%s:%u", op->host, op->port);
     op->request = make_http_env_request(op->method, op->path, "HTTP/1.1");
     http_env_add_header(op->request, "Host", op->host_entry);
     if (op->proxy_authorization && !op->https)
@@ -577,6 +578,7 @@ http_op_t *http_client_make_request(http_client_t *client,
     op->content_length = HTTP_ENCODE_RAW;
     op->callback = NULL_ACTION_1;
     op->recycle_connection = true;
+    op->connect_entry = NULL;
     return op;
 }
 
@@ -743,9 +745,11 @@ static void op_dispatch(http_op_t *op)
 
 static void op_send_http_connect(http_op_t *op)
 {
+    assert(!op->connect_entry);
+    op->connect_entry = charstr_printf("%s:%u", op->host, op->port);
     http_env_t *connect_request =
-        make_http_env_request("CONNECT", op->host_entry, "HTTP/1.1");
-    http_env_add_header(connect_request, "Host", op->host_entry);
+        make_http_env_request("CONNECT", op->connect_entry, "HTTP/1.1");
+    http_env_add_header(connect_request, "Host", op->connect_entry);
     if (op->proxy_authorization)
         http_env_add_header(connect_request, "Proxy-Authorization",
                             op->proxy_authorization);
@@ -1157,6 +1161,7 @@ static void do_close(http_op_t *op)
     fsfree(op->proxy_host);
     fsfree(op->proxy_authorization);
     fsfree(op->host_entry);
+    fsfree(op->connect_entry);
     fsfree(op->method);
     fsfree(op->path);
     fsfree(op->host);
