@@ -65,7 +65,7 @@ test-client-file-bundle() {
     local arch=$1
     run-test $arch stage/$arch/build/test/webclient \
         https://github.com/ \
-        test/certs/DigiCert_High_Assurance_EV_Root_CA.pem
+        test/certs/DigiCert_Global_Root_CA.pem
 }
 
 test-jsonop() {
