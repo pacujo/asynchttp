@@ -859,6 +859,7 @@ static void op_wrap_tls(http_op_t *op)
         open_tls_client_2(op->client->async,
                           tcp_get_input_stream(op->stack.tcp_conn),
                           op->ca_bundle, op->host);
+    tls_suppress_ragged_eofs(op->stack.tls_conn);
     tls_set_plain_output_stream(op->stack.tls_conn,
                                 http_get_output_stream(op->stack.http_conn));
     switchstream_reattach(op->output_swstr,
