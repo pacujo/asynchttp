@@ -2,19 +2,6 @@
 
 set -e
 
-run-test () {
-    local arch=$1
-    shift
-    case $arch in
-        darwin | linux32)
-            "$@"
-            ;;
-        *)
-            valgrind --leak-check=full --error-exitcode=123 "$@"
-            ;;
-    esac
-}
-
 main() {
     cd "$(dirname "$(realpath "$0")")/.."
     local os=$(uname -s)
@@ -53,55 +40,13 @@ realpath () {
     fi
 }
 
-test-client-system-bundle() {
-    local arch=$1 openssl_dir
-    openssl_dir=$(openssl version -d | awk '{ print $2 }' | tr -d '"')
-    SSL_CERT_DIR=$openssl_dir/certs \
-    SSL_CERT_FILE=$openssl_dir/cert.pem \
-    run-test $arch stage/$arch/build/test/webclient https://github.com/
-}
-
-test-client-file-bundle() {
-    local arch=$1
-    run-test $arch stage/$arch/build/test/webclient \
-        https://github.com/ \
-        test/certs/DigiCert_Global_Root_CA.pem
-}
-
-test-jsonop() {
-    local arch=$1 status
-    set +e
-    run-test \
-        $arch \
-        ./stage/$arch/build/test/webclient \
-        --json \
-        --timeout 1 \
-        http://echo.jsontest.com/key/value
-    status=$?
-    set -e
-    [ $status -eq 1 ]
-    run-test > stage/$arch/body \
-        $arch \
-        ./stage/$arch/build/test/webclient \
-        --json \
-        http://echo.jsontest.com/key/value
-    cat > stage/$arch/expected-body <<EOF
-{
-  "key": "value"
-}
-EOF
-    cmp stage/$arch/expected-body stage/$arch/body
-}
-
 run-tests () {
     local arch=$1
     echo
     echo "Run unit tests on $arch"
     echo
     stage/$arch/build/test/fstracecheck
-    test-jsonop $arch
-    test-client-system-bundle $arch
-    test-client-file-bundle $arch
+    test/test_client.py $arch
 }
 
 main
