@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 set -e
 
@@ -11,23 +11,25 @@ main() {
         for arch in "${archs[@]}" ; do
             run-tests "$arch"
         done
-    elif [ "$os" = Linux ]; then
-        local cpu=$(uname -m)
-        if [ "$cpu" = x86_64 ]; then
-            #run-tests linux32
-            run-tests linux64
-        elif [ "$cpu" = i686 ]; then
-            run-tests linux32
-        else
-            echo "$0: Unknown CPU: $cpu" >&2
-            exit 1
-        fi
-    elif [ "$os" = Darwin ]; then
-        run-tests darwin
-        :
     else
-        echo "$0: Unknown OS: $os" >&2
-        exit 1
+        local os=$(uname -m -s)
+        case $os in
+            "Darwin arm64")
+                run-tests darwin;;
+            "Darwin x86_64")
+                run-tests darwin;;
+            "FreeBSD amd64")
+                run-tests freebsd_amd64;;
+            "Linux i686")
+                run-tests linux32;;
+            "Linux x86_64")
+                run-tests linux64;;
+            "OpenBSD amd64")
+                run-tests openbsd_amd64;;
+            *)
+                echo "$0: Unknown OS architecture: $os" >&2
+                exit 1
+        esac
     fi
 }
 
