@@ -150,6 +150,7 @@ def test_https_linux(arch, stage_path):
                 url,
                 root_cert_files[0],
             ],
+            env={},
         )
         assert status.returncode == 0
         assert json.loads(status.stdout.decode()) == {"key": "value"}
@@ -187,6 +188,7 @@ def test_jsonop(arch, stage_path):
                 "1",
                 url,
             ],
+            env={},
         )
         assert status.returncode == 1
 
@@ -197,6 +199,7 @@ def test_jsonop(arch, stage_path):
                 "--json",
                 url,
             ],
+            env={},
         )
         assert status.returncode == 0
         assert json.loads(status.stdout.decode()) == {"key": "value"}
