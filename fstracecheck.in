@@ -3,11 +3,6 @@
 flags=(
     --cc=@CC@
     -Iinclude
-    -D_FILE_OFFSET_BITS=64
 )
 
-libconfig_flags=$(@CONFIG_PARSER@ |
-    tr ' ' '\n' |
-    grep '^-[DI]')
-
-exec @FSTRACECHECK@ "${flags[@]}" $libconfig_flags src/*.c
+exec @FSTRACECHECK@ @CPPFLAGS@ "${flags[@]}" src/*.c
