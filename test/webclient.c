@@ -1,21 +1,22 @@
+#include <errno.h>
+#include <netdb.h>
+#include <regex.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdbool.h>
-#include <errno.h>
 #include <string.h>
-#include <unistd.h>
-#include <regex.h>
-#include <sys/types.h>
 #include <sys/socket.h>
-#include <netdb.h>
-#include <fstrace.h>
-#include <fsdyn/fsalloc.h>
+#include <sys/types.h>
+#include <unistd.h>
+
 #include <async/async.h>
-#include <async/tls_connection.h>
-#include <async/tcp_connection.h>
 #include <async/emptystream.h>
+#include <async/tcp_connection.h>
+#include <async/tls_connection.h>
 #include <asynchttp/http_op_jockey.h>
 #include <asynchttp/jsonop.h>
+#include <fsdyn/fsalloc.h>
+#include <fstrace.h>
 
 static const char *PROGRAM = "webclient";
 
@@ -71,20 +72,21 @@ static void probe_receive(globals_t *g)
             "Protocol: %s\n"
             "Code: %03d\n"
             "Explanation: %s\n",
-            http_env_get_protocol(envelope),
-            http_env_get_code(envelope),
+            http_env_get_protocol(envelope), http_env_get_code(envelope),
             http_env_get_explanation(envelope));
     int response_code = http_env_get_code(envelope);
     if (response_code >= 200 && response_code <= 399) {
         g->success = true;
         fprintf(stderr, "Done!\n");
-    } else fprintf(stderr, "Done (with an error response)!\n");
+    } else
+        fprintf(stderr, "Done (with an error response)!\n");
     http_op_jockey_close(g->jockey);
     g->jockey = NULL;
     if (g->success && g->args->spam >= 0)
         async_timer_start(g->async, async_now(g->async) + g->args->spam,
                           (action_1) { g, (act_1) get_next });
-    else close_and_exit(g);
+    else
+        close_and_exit(g);
 }
 
 static void get_next_raw(globals_t *g)
@@ -117,7 +119,8 @@ static void probe_json_receive(globals_t *g)
     if (g->success && g->args->spam >= 0)
         async_timer_start(g->async, async_now(g->async) + g->args->spam,
                           (action_1) { g, (act_1) get_next });
-    else close_and_exit(g);
+    else
+        close_and_exit(g);
 }
 
 static void get_next_json(globals_t *g)
@@ -243,7 +246,7 @@ static int parse_cmdline(int argc, const char *const argv[], args_t *args)
             double interval = strtod(start, &end);
             if (start == end || interval < 0)
                 bad_usage();
-            args->spam = (int64_t) (interval * ASYNC_S);
+            args->spam = (int64_t)(interval * ASYNC_S);
             continue;
         }
         if (!strcmp(argv[i], "--unverified")) {
@@ -283,8 +286,10 @@ int main(int argc, const char *const *argv)
         return EXIT_FAILURE;
     }
     if (args.unverified && args.pinned) {
-        fprintf(stderr, "%s: --unverified and --pinned may not be "
-                "specified at the same time\n", PROGRAM);
+        fprintf(stderr,
+                "%s: --unverified and --pinned may not be "
+                "specified at the same time\n",
+                PROGRAM);
         return EXIT_FAILURE;
     }
     if (args.pinned && !args.pem_path) {

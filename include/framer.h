@@ -3,6 +3,7 @@
 
 #include <async/async.h>
 #include <async/bytestream_1.h>
+
 #include "envelope.h"
 
 #ifdef __cplusplus
@@ -37,8 +38,8 @@ bytestream_1 http_framer_get_output_stream(http_framer_t *framer);
 void http_framer_terminate(http_framer_t *framer);
 
 enum {
-    HTTP_ENCODE_CHUNKED = -1,   /* declare and encode chunked */
-    HTTP_ENCODE_RAW = -2        /* no envelope or content processing */
+    HTTP_ENCODE_CHUNKED = -1, /* declare and encode chunked */
+    HTTP_ENCODE_RAW = -2      /* no envelope or content processing */
 };
 
 /* Submit an HTTP message for sending, ie, an HTTP envelope plus a

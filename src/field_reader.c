@@ -1,14 +1,17 @@
-#include <string.h>
-#include <errno.h>
+#include "field_reader.h"
+
 #include <assert.h>
-#include <fstrace.h>
+#include <errno.h>
+#include <string.h>
+
+#include <async/bytestream_1.h>
 #include <fsdyn/bytearray.h>
 #include <fsdyn/fsalloc.h>
-#include <async/bytestream_1.h>
-#include "field_reader.h"
+#include <fstrace.h>
+
 #include "asynchttp_version.h"
 
-static void __attribute__ ((noinline)) protocol_violation(void)
+static void __attribute__((noinline)) protocol_violation(void)
 {
     /* set your breakpoint here*/
     errno = EPROTO;
@@ -37,8 +40,8 @@ field_reader_t *make_field_reader(bytestream_1 stream, size_t max_size)
 {
     field_reader_t *reader = fsalloc(sizeof *reader);
     reader->uid = fstrace_get_unique_id();
-    FSTRACE(ASYNCHTTP_FIELD_READER_CREATE,
-            reader->uid, reader, stream.obj, max_size);
+    FSTRACE(ASYNCHTTP_FIELD_READER_CREATE, reader->uid, reader, stream.obj,
+            max_size);
     reader->state = FIELD_READER_AT_START;
     reader->stream = stream;
     reader->buffer = make_byte_array(max_size);
@@ -79,8 +82,8 @@ static void set_reader_state(field_reader_t *reader, field_reader_state_t state)
     if (FSTRACE_ENABLED(ASYNCHTTP_FIELD_READER_SET_STATE) &&
         reader->state != state)
         /* limit fstrace clutter */
-        FSTRACE(ASYNCHTTP_FIELD_READER_SET_STATE, reader->uid,
-                trace_state, &reader->state, trace_state, &state);
+        FSTRACE(ASYNCHTTP_FIELD_READER_SET_STATE, reader->uid, trace_state,
+                &reader->state, trace_state, &state);
     reader->state = state;
 }
 
@@ -93,12 +96,11 @@ int field_reader_read(field_reader_t *reader)
         case FIELD_READER_AVAILABLE:
         case FIELD_READER_UNAVAILABLE:
             abort();
-        default:
-            ;
+        default:;
     }
     for (;;) {
-        ssize_t count = bytestream_1_read(reader->stream,
-                                          reader->tail, sizeof reader->tail);
+        ssize_t count = bytestream_1_read(reader->stream, reader->tail,
+                                          sizeof reader->tail);
         FSTRACE(ASYNCHTTP_FIELD_READER_READ, reader->uid, sizeof reader->tail,
                 count);
         FSTRACE(ASYNCHTTP_FIELD_READER_READ_DUMP, reader->uid, reader->tail,
@@ -112,8 +114,6 @@ int field_reader_read(field_reader_t *reader)
             protocol_violation();
             return -1;
         }
-
-
 
         size_t i;
         for (i = 0; i < count; i++)
@@ -131,8 +131,7 @@ int field_reader_read(field_reader_t *reader)
                     switch (reader->state) {
                         case FIELD_READER_AT_START:
                         case FIELD_READER_AFTER_CR:
-                            if (!byte_array_append(reader->buffer,
-                                                   reader->tail,
+                            if (!byte_array_append(reader->buffer, reader->tail,
                                                    i + 1)) {
                                 set_reader_state(reader,
                                                  FIELD_READER_UNAVAILABLE);
@@ -186,4 +185,3 @@ size_t field_reader_leftover_size(field_reader_t *reader)
     FSTRACE(ASYNCHTTP_FIELD_READER_LEFT_OVER, reader->uid, left_over);
     return left_over;
 }
-

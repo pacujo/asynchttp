@@ -1,21 +1,24 @@
-#include <stdbool.h>
-#include <string.h>
+#include "decoder.h"
+
+#include <assert.h>
 #include <errno.h>
 #include <limits.h>
-#include <assert.h>
-#include <fstrace.h>
-#include <fsdyn/list.h>
-#include <fsdyn/fsalloc.h>
-#include <async/queuestream.h>
-#include <async/chunkdecoder.h>
-#include <async/nicestream.h>
-#include <async/emptystream.h>
-#include <async/blobstream.h>
-#include "decoder.h"
-#include "field_reader.h"
-#include "asynchttp_version.h"
+#include <stdbool.h>
+#include <string.h>
 
-static void __attribute__ ((noinline)) protocol_violation(void)
+#include <async/blobstream.h>
+#include <async/chunkdecoder.h>
+#include <async/emptystream.h>
+#include <async/nicestream.h>
+#include <async/queuestream.h>
+#include <fsdyn/fsalloc.h>
+#include <fsdyn/list.h>
+#include <fstrace.h>
+
+#include "asynchttp_version.h"
+#include "field_reader.h"
+
+static void __attribute__((noinline)) protocol_violation(void)
 {
     /* set your breakpoint here*/
     errno = EPROTO;
@@ -35,7 +38,7 @@ typedef enum {
 } http_decoder_state_t;
 
 enum {
-    HTTP_DECODE_UNKNOWN = -99
+    HTTP_DECODE_UNKNOWN = -99,
 };
 
 struct http_decoder {
@@ -87,7 +90,7 @@ typedef struct {
     uint64_t uid;
     chunkdecoder_t *chunk_decoder;
     chunked_wrapper_state_t state;
-    field_reader_t *reader;     /* CHUNKED_WRAPPER_READING_TRAILER */
+    field_reader_t *reader; /* CHUNKED_WRAPPER_READING_TRAILER */
 } chunked_wrapper_t;
 
 typedef struct {
@@ -163,8 +166,8 @@ FSTRACE_DECL(ASYNCHTTP_DECODER_SET_STATE, "UID=%64u OLD=%I NEW=%I");
 static void set_decoder_state(http_decoder_t *decoder,
                               http_decoder_state_t state)
 {
-    FSTRACE(ASYNCHTTP_DECODER_SET_STATE, decoder->uid,
-            trace_state, &decoder->state, trace_state, &state);
+    FSTRACE(ASYNCHTTP_DECODER_SET_STATE, decoder->uid, trace_state,
+            &decoder->state, trace_state, &state);
     decoder->state = state;
 }
 
@@ -309,8 +312,8 @@ static chunked_wrapper_t *open_chunked_wrapper(http_decoder_t *decoder)
         chunk_decode(decoder->async,
                      queuestream_as_bytestream_1(decoder->input_stream),
                      CHUNKDECODER_DETACH_AT_TRAILER);
-    FSTRACE(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_CREATE,
-            wrapper->uid, wrapper, decoder->uid, wrapper->chunk_decoder);
+    FSTRACE(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_CREATE, wrapper->uid, wrapper,
+            decoder->uid, wrapper->chunk_decoder);
     // TODO: final extensions
     wrapper->state = CHUNKED_WRAPPER_READING_CONTENT;
     wrapper->reader = NULL;
@@ -323,11 +326,9 @@ static void close_reader(http_decoder_t *decoder, field_reader_t *reader)
 {
     FSTRACE(ASYNCHTTP_DECODER_CLOSE_READER, decoder->uid);
     blobstream_t *prefix =
-        copy_blobstream(decoder->async,
-                        field_reader_leftover_bytes(reader),
+        copy_blobstream(decoder->async, field_reader_leftover_bytes(reader),
                         field_reader_leftover_size(reader));
-    queuestream_push(decoder->input_stream,
-                     blobstream_as_bytestream_1(prefix));
+    queuestream_push(decoder->input_stream, blobstream_as_bytestream_1(prefix));
     field_reader_close(reader);
 }
 
@@ -353,9 +354,8 @@ FSTRACE_DECL(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_SET_STATE,
 static void chunked_wrapper_set_state(chunked_wrapper_t *wrapper,
                                       chunked_wrapper_state_t state)
 {
-    FSTRACE(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_SET_STATE,
-            wrapper->uid, wrapper->decoder->uid,
-            trace_chunked_wrapper_state, &wrapper->state,
+    FSTRACE(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_SET_STATE, wrapper->uid,
+            wrapper->decoder->uid, trace_chunked_wrapper_state, &wrapper->state,
             trace_chunked_wrapper_state, &state);
     wrapper->state = state;
 }
@@ -406,8 +406,8 @@ static ssize_t chunked_wrapper_read_trailer(chunked_wrapper_t *wrapper)
         protocol_violation();
         return -1;
     }
-    FSTRACE(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_TRAILER_READ,
-            wrapper->uid, decoder->uid);
+    FSTRACE(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_TRAILER_READ, wrapper->uid,
+            decoder->uid);
     close_reader(decoder, wrapper->reader);
     decoder->reading_content.trailer_buffer = trailer_buffer;
     chunked_wrapper_set_state(wrapper, CHUNKED_WRAPPER_DONE);
@@ -425,8 +425,8 @@ static void push_leftovers(http_decoder_t *decoder,
                      blobstream_as_bytestream_1(leftover));
 }
 
-static ssize_t do_chunked_wrapper_read(chunked_wrapper_t *wrapper,
-                                       void *buf, size_t count)
+static ssize_t do_chunked_wrapper_read(chunked_wrapper_t *wrapper, void *buf,
+                                       size_t count)
 {
     http_decoder_t *decoder = wrapper->decoder;
     assert(reading_content(decoder));
@@ -469,14 +469,14 @@ FSTRACE_DECL(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_READ,
 FSTRACE_DECL(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_READ_DUMP,
              "UID=%64u DECODER=%64u DATA=%B");
 
-static ssize_t chunked_wrapper_read(chunked_wrapper_t *wrapper,
-                                    void *buf, size_t count)
+static ssize_t chunked_wrapper_read(chunked_wrapper_t *wrapper, void *buf,
+                                    size_t count)
 {
     ssize_t n = do_chunked_wrapper_read(wrapper, buf, count);
-    FSTRACE(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_READ,
-            wrapper->uid, wrapper->decoder->uid, count, n);
-    FSTRACE(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_READ_DUMP,
-            wrapper->uid, wrapper->decoder->uid, buf, n);
+    FSTRACE(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_READ, wrapper->uid,
+            wrapper->decoder->uid, count, n);
+    FSTRACE(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_READ_DUMP, wrapper->uid,
+            wrapper->decoder->uid, buf, n);
     return n;
 }
 
@@ -485,8 +485,8 @@ FSTRACE_DECL(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_CLOSE, "UID=%64u DECODER=%64u");
 static void chunked_wrapper_close(chunked_wrapper_t *wrapper)
 {
     http_decoder_t *decoder = wrapper->decoder;
-    FSTRACE(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_CLOSE,
-            wrapper->uid, decoder->uid);
+    FSTRACE(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_CLOSE, wrapper->uid,
+            decoder->uid);
     stop_reading_content(decoder);
     async_wound(decoder->async, wrapper);
     if (decoder->state == HTTP_DECODER_ZOMBIE) {
@@ -495,8 +495,7 @@ static void chunked_wrapper_close(chunked_wrapper_t *wrapper)
     }
     switch (wrapper->state) {
         case CHUNKED_WRAPPER_READING_CONTENT:
-            decoder->skipping_chunked.chunk_decoder =
-                wrapper->chunk_decoder;
+            decoder->skipping_chunked.chunk_decoder = wrapper->chunk_decoder;
             set_decoder_state(decoder, HTTP_DECODER_SKIPPING_CHUNKED);
             break;
         case CHUNKED_WRAPPER_READING_TRAILER:
@@ -523,8 +522,8 @@ FSTRACE_DECL(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_REGISTER,
 static void chunked_wrapper_register_callback(chunked_wrapper_t *wrapper,
                                               action_1 action)
 {
-    FSTRACE(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_REGISTER,
-            wrapper->uid, wrapper->decoder->uid, action.obj, action.act);
+    FSTRACE(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_REGISTER, wrapper->uid,
+            wrapper->decoder->uid, action.obj, action.act);
     register_content_callback(wrapper->decoder, action);
 }
 
@@ -533,8 +532,8 @@ FSTRACE_DECL(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_UNREGISTER,
 
 static void chunked_wrapper_unregister_callback(chunked_wrapper_t *wrapper)
 {
-    FSTRACE(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_UNREGISTER,
-            wrapper->uid, wrapper->decoder->uid);
+    FSTRACE(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_UNREGISTER, wrapper->uid,
+            wrapper->decoder->uid);
     unregister_content_callback(wrapper->decoder);
 }
 
@@ -559,8 +558,8 @@ static exhaust_wrapper_t *open_exhaust_wrapper(http_decoder_t *decoder)
     exhaust_wrapper_t *wrapper = fsalloc(sizeof *wrapper);
     wrapper->decoder = decoder;
     wrapper->uid = fstrace_get_unique_id();
-    FSTRACE(ASYNCHTTP_DECODER_EXHAUST_WRAPPER_CREATE,
-            wrapper->uid, wrapper, decoder->uid);
+    FSTRACE(ASYNCHTTP_DECODER_EXHAUST_WRAPPER_CREATE, wrapper->uid, wrapper,
+            decoder->uid);
     return wrapper;
 }
 
@@ -569,15 +568,15 @@ FSTRACE_DECL(ASYNCHTTP_DECODER_EXHAUST_WRAPPER_READ,
 FSTRACE_DECL(ASYNCHTTP_DECODER_EXHAUST_WRAPPER_READ_DUMP,
              "UID=%64u DECODER=%64u DATA=%B");
 
-static ssize_t exhaust_wrapper_read(exhaust_wrapper_t *wrapper,
-                                    void *buf, size_t count)
+static ssize_t exhaust_wrapper_read(exhaust_wrapper_t *wrapper, void *buf,
+                                    size_t count)
 {
     assert(reading_content(wrapper->decoder));
     size_t n = queuestream_read(wrapper->decoder->input_stream, buf, count);
-    FSTRACE(ASYNCHTTP_DECODER_EXHAUST_WRAPPER_READ,
-            wrapper->uid, wrapper->decoder->uid, count, n);
-    FSTRACE(ASYNCHTTP_DECODER_EXHAUST_WRAPPER_READ_DUMP,
-            wrapper->uid, wrapper->decoder->uid, buf, n);
+    FSTRACE(ASYNCHTTP_DECODER_EXHAUST_WRAPPER_READ, wrapper->uid,
+            wrapper->decoder->uid, count, n);
+    FSTRACE(ASYNCHTTP_DECODER_EXHAUST_WRAPPER_READ_DUMP, wrapper->uid,
+            wrapper->decoder->uid, buf, n);
     return n;
 }
 
@@ -586,8 +585,8 @@ FSTRACE_DECL(ASYNCHTTP_DECODER_EXHAUST_WRAPPER_CLOSE, "UID=%64u DECODER=%64u");
 static void exhaust_wrapper_close(exhaust_wrapper_t *wrapper)
 {
     http_decoder_t *decoder = wrapper->decoder;
-    FSTRACE(ASYNCHTTP_DECODER_EXHAUST_WRAPPER_CLOSE,
-            wrapper->uid, decoder->uid);
+    FSTRACE(ASYNCHTTP_DECODER_EXHAUST_WRAPPER_CLOSE, wrapper->uid,
+            decoder->uid);
     stop_reading_content(decoder);
     async_wound(decoder->async, wrapper);
     if (decoder->state == HTTP_DECODER_ZOMBIE)
@@ -601,8 +600,8 @@ FSTRACE_DECL(ASYNCHTTP_DECODER_EXHAUST_WRAPPER_REGISTER,
 static void exhaust_wrapper_register_callback(exhaust_wrapper_t *wrapper,
                                               action_1 action)
 {
-    FSTRACE(ASYNCHTTP_DECODER_EXHAUST_WRAPPER_REGISTER,
-            wrapper->uid, wrapper->decoder->uid, action.obj, action.act);
+    FSTRACE(ASYNCHTTP_DECODER_EXHAUST_WRAPPER_REGISTER, wrapper->uid,
+            wrapper->decoder->uid, action.obj, action.act);
     register_content_callback(wrapper->decoder, action);
 }
 
@@ -611,8 +610,8 @@ FSTRACE_DECL(ASYNCHTTP_DECODER_EXHAUST_WRAPPER_UNREGISTER,
 
 static void exhaust_wrapper_unregister_callback(exhaust_wrapper_t *wrapper)
 {
-    FSTRACE(ASYNCHTTP_DECODER_EXHAUST_WRAPPER_UNREGISTER,
-            wrapper->uid, wrapper->decoder->uid);
+    FSTRACE(ASYNCHTTP_DECODER_EXHAUST_WRAPPER_UNREGISTER, wrapper->uid,
+            wrapper->decoder->uid);
     unregister_content_callback(wrapper->decoder);
 }
 
@@ -638,15 +637,15 @@ static bounded_wrapper_t *open_bounded_wrapper(http_decoder_t *decoder,
     bounded_wrapper_t *wrapper = fsalloc(sizeof *wrapper);
     wrapper->decoder = decoder;
     wrapper->uid = fstrace_get_unique_id();
-    FSTRACE(ASYNCHTTP_DECODER_BOUNDED_WRAPPER_CREATE,
-            wrapper->uid, wrapper, decoder->uid, content_length);
+    FSTRACE(ASYNCHTTP_DECODER_BOUNDED_WRAPPER_CREATE, wrapper->uid, wrapper,
+            decoder->uid, content_length);
     wrapper->remaining = content_length;
     wrapper->errored = 0;
     return wrapper;
 }
 
-static ssize_t do_bounded_wrapper_read(bounded_wrapper_t *wrapper,
-                                       void *buf, size_t count)
+static ssize_t do_bounded_wrapper_read(bounded_wrapper_t *wrapper, void *buf,
+                                       size_t count)
 {
     assert(reading_content(wrapper->decoder));
     if (wrapper->errored) {
@@ -675,14 +674,14 @@ FSTRACE_DECL(ASYNCHTTP_DECODER_BOUNDED_WRAPPER_READ,
 FSTRACE_DECL(ASYNCHTTP_DECODER_BOUNDED_WRAPPER_READ_DUMP,
              "UID=%64u DECODER=%64u DATA=%B");
 
-static ssize_t bounded_wrapper_read(bounded_wrapper_t *wrapper,
-                                    void *buf, size_t count)
+static ssize_t bounded_wrapper_read(bounded_wrapper_t *wrapper, void *buf,
+                                    size_t count)
 {
     size_t n = do_bounded_wrapper_read(wrapper, buf, count);
-    FSTRACE(ASYNCHTTP_DECODER_BOUNDED_WRAPPER_READ,
-            wrapper->uid, wrapper->decoder->uid, count, n);
-    FSTRACE(ASYNCHTTP_DECODER_BOUNDED_WRAPPER_READ_DUMP,
-            wrapper->uid, wrapper->decoder->uid, buf, n);
+    FSTRACE(ASYNCHTTP_DECODER_BOUNDED_WRAPPER_READ, wrapper->uid,
+            wrapper->decoder->uid, count, n);
+    FSTRACE(ASYNCHTTP_DECODER_BOUNDED_WRAPPER_READ_DUMP, wrapper->uid,
+            wrapper->decoder->uid, buf, n);
     return n;
 }
 
@@ -691,8 +690,8 @@ FSTRACE_DECL(ASYNCHTTP_DECODER_BOUNDED_WRAPPER_CLOSE, "UID=%64u DECODER=%64u");
 static void bounded_wrapper_close(bounded_wrapper_t *wrapper)
 {
     http_decoder_t *decoder = wrapper->decoder;
-    FSTRACE(ASYNCHTTP_DECODER_BOUNDED_WRAPPER_CLOSE,
-            wrapper->uid, decoder->uid);
+    FSTRACE(ASYNCHTTP_DECODER_BOUNDED_WRAPPER_CLOSE, wrapper->uid,
+            decoder->uid);
     stop_reading_content(decoder);
     async_wound(decoder->async, wrapper);
     if (decoder->state == HTTP_DECODER_ZOMBIE)
@@ -711,8 +710,8 @@ FSTRACE_DECL(ASYNCHTTP_DECODER_BOUNDED_WRAPPER_REGISTER,
 static void bounded_wrapper_register_callback(bounded_wrapper_t *wrapper,
                                               action_1 action)
 {
-    FSTRACE(ASYNCHTTP_DECODER_BOUNDED_WRAPPER_REGISTER,
-            wrapper->uid, wrapper->decoder->uid, action.obj, action.act);
+    FSTRACE(ASYNCHTTP_DECODER_BOUNDED_WRAPPER_REGISTER, wrapper->uid,
+            wrapper->decoder->uid, action.obj, action.act);
     register_content_callback(wrapper->decoder, action);
 }
 
@@ -721,8 +720,8 @@ FSTRACE_DECL(ASYNCHTTP_DECODER_BOUNDED_WRAPPER_UNREGISTER,
 
 static void bounded_wrapper_unregister_callback(bounded_wrapper_t *wrapper)
 {
-    FSTRACE(ASYNCHTTP_DECODER_BOUNDED_WRAPPER_UNREGISTER,
-            wrapper->uid, wrapper->decoder->uid);
+    FSTRACE(ASYNCHTTP_DECODER_BOUNDED_WRAPPER_UNREGISTER, wrapper->uid,
+            wrapper->decoder->uid);
     unregister_content_callback(wrapper->decoder);
 }
 
@@ -745,16 +744,16 @@ static ssize_t scan_size(const char *p)
         char c = *p++;
         if (c >= '0' && c <= '9') {
             if (size > SSIZE_MAX / 10)
-                return -1;      /* overflow */
+                return -1; /* overflow */
             size *= 10;
             int digit = c - '0';
             if (digit > SSIZE_MAX - size)
-                return -1;      /* overflow */
+                return -1; /* overflow */
             size += digit;
-        }
-        else if (!c)
+        } else if (!c)
             return size;
-        else return -1;         /* illegal character */
+        else
+            return -1; /* illegal character */
     }
 }
 
@@ -787,17 +786,15 @@ static bool prepare_content(http_decoder_t *decoder, ssize_t content_length,
         content_length =
             discover_content_length(decoder->reading_content.envelope);
     switch (content_length) {
-        case HTTP_DECODE_CHUNKED:
-            {
-                chunked_wrapper_t *wrapper = open_chunked_wrapper(decoder);
-                *content = chunked_wrapper_as_bytestream_1(wrapper);
-            }
+        case HTTP_DECODE_CHUNKED: {
+            chunked_wrapper_t *wrapper = open_chunked_wrapper(decoder);
+            *content = chunked_wrapper_as_bytestream_1(wrapper);
+        }
             return true;
-        case HTTP_DECODE_EXHAUST:
-            {
-                exhaust_wrapper_t *wrapper = open_exhaust_wrapper(decoder);
-                *content = exhaust_wrapper_as_bytestream_1(wrapper);
-            }
+        case HTTP_DECODE_EXHAUST: {
+            exhaust_wrapper_t *wrapper = open_exhaust_wrapper(decoder);
+            *content = exhaust_wrapper_as_bytestream_1(wrapper);
+        }
             return true;
         case HTTP_DECODE_UNKNOWN:
             return false;
@@ -1006,8 +1003,8 @@ int http_decoder_get_content(http_decoder_t *decoder, ssize_t content_length,
                 trace_content_length, &content_length, content_length);
         return -1;
     }
-    FSTRACE(ASYNCHTTP_DECODER_GET_CONTENT, decoder->uid,
-            trace_content_length, &content_length, content_length, content->obj);
+    FSTRACE(ASYNCHTTP_DECODER_GET_CONTENT, decoder->uid, trace_content_length,
+            &content_length, content_length, content->obj);
     decoder->reading_content.output_stream = *content;
     set_decoder_state(decoder, HTTP_DECODER_READING_CONTENT);
     return 0;

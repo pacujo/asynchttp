@@ -1,8 +1,10 @@
-#include <fstrace.h>
-#include <fsdyn/charstr.h>
-#include <fsdyn/list.h>
-#include <fsdyn/fsalloc.h>
 #include "envelope.h"
+
+#include <fsdyn/charstr.h>
+#include <fsdyn/fsalloc.h>
+#include <fsdyn/list.h>
+#include <fstrace.h>
+
 #include "asynchttp_version.h"
 
 typedef struct {
@@ -23,8 +25,8 @@ struct http_env {
         } response;
     };
     const char *protocol;
-    list_t *headers;            /* of httpassoc_t */
-    list_t *trailers;           /* of httpassoc_t */
+    list_t *headers;  /* of httpassoc_t */
+    list_t *trailers; /* of httpassoc_t */
     const char *final_extensions;
 };
 
@@ -36,8 +38,8 @@ http_env_t *make_http_env_request(const char *method, const char *path,
 {
     http_env_t *envelope = fsalloc(sizeof *envelope);
     envelope->uid = fstrace_get_unique_id();
-    FSTRACE(ASYNCHTTP_ENV_REQ_CREATE, envelope->uid, envelope,
-            method, path, protocol);
+    FSTRACE(ASYNCHTTP_ENV_REQ_CREATE, envelope->uid, envelope, method, path,
+            protocol);
     envelope->type = HTTP_ENV_REQUEST;
     envelope->request.method = method;
     envelope->request.path = path;
@@ -56,8 +58,8 @@ http_env_t *make_http_env_response(const char *protocol, unsigned code,
 {
     http_env_t *envelope = fsalloc(sizeof *envelope);
     envelope->uid = fstrace_get_unique_id();
-    FSTRACE(ASYNCHTTP_ENV_RESP_CREATE, envelope->uid, envelope,
-            protocol, code, explanation);
+    FSTRACE(ASYNCHTTP_ENV_RESP_CREATE, envelope->uid, envelope, protocol, code,
+            explanation);
     envelope->type = HTTP_ENV_RESPONSE;
     envelope->response.code = code;
     envelope->response.explanation = explanation;
@@ -91,9 +93,7 @@ void destroy_http_env(http_env_t *envelope)
     fsfree(envelope);
 }
 
-static httpassoc_t *create_assoc(char *field,
-                                 bool free_field,
-                                 char *value,
+static httpassoc_t *create_assoc(char *field, bool free_field, char *value,
                                  bool free_value)
 {
     httpassoc_t *assoc = fsalloc(sizeof *assoc);
@@ -104,10 +104,7 @@ static httpassoc_t *create_assoc(char *field,
     return assoc;
 }
 
-static void add_field(list_t *fields,
-                      char *field,
-                      bool free_field,
-                      char *value,
+static void add_field(list_t *fields, char *field, bool free_field, char *value,
                       bool free_value)
 {
     httpassoc_t *assoc = create_assoc(field, free_field, value, free_value);
@@ -126,17 +123,10 @@ void http_env_add_header(http_env_t *envelope, const char *field,
 FSTRACE_DECL(ASYNCHTTP_ENV_ADD_HEADER_2,
              "UID=%64u FIELD=%s FREE-FIELD=%b VALUE=%s FREE-VALUE=%b");
 
-void http_env_add_header_2(http_env_t *envelope,
-                           char *field,
-                           bool free_field,
-                           char *value,
-                           bool free_value)
+void http_env_add_header_2(http_env_t *envelope, char *field, bool free_field,
+                           char *value, bool free_value)
 {
-    FSTRACE(ASYNCHTTP_ENV_ADD_HEADER_2,
-            envelope->uid,
-            field,
-            free_field,
-            value,
+    FSTRACE(ASYNCHTTP_ENV_ADD_HEADER_2, envelope->uid, field, free_field, value,
             free_value);
     add_field(envelope->headers, field, free_field, value, free_value);
 }
@@ -153,18 +143,11 @@ void http_env_add_trailer(http_env_t *envelope, const char *field,
 FSTRACE_DECL(ASYNCHTTP_ENV_ADD_TRAILER_2,
              "UID=%64u FIELD=%s FREE-FIELD=%b VALUE=%s FREE-VALUE=%b");
 
-void http_env_add_trailer_2(http_env_t *envelope,
-                            char *field,
-                            bool free_field,
-                            char *value,
-                            bool free_value)
+void http_env_add_trailer_2(http_env_t *envelope, char *field, bool free_field,
+                            char *value, bool free_value)
 {
-    FSTRACE(ASYNCHTTP_ENV_ADD_TRAILER_2,
-            envelope->uid,
-            field,
-            free_field,
-            value,
-            free_value);
+    FSTRACE(ASYNCHTTP_ENV_ADD_TRAILER_2, envelope->uid, field, free_field,
+            value, free_value);
     add_field(envelope->trailers, field, free_field, value, free_value);
 }
 
@@ -221,7 +204,8 @@ static http_env_iter_t *get_next_field(list_t *fields, http_env_iter_t *iter,
     list_elem_t *e;
     if (iter)
         e = list_next((list_elem_t *) iter);
-    else e = list_get_first(fields);
+    else
+        e = list_get_first(fields);
     if (!e)
         return NULL;
     httpassoc_t *assoc = (httpassoc_t *) list_elem_get_value(e);
@@ -254,9 +238,7 @@ static httpassoc_t *copy_assoc(const httpassoc_t *assoc)
     char *value_copy = assoc->value;
     if (assoc->free_value)
         value_copy = charstr_dupstr(assoc->value);
-    return create_assoc(field_copy,
-                        assoc->free_field,
-                        value_copy,
+    return create_assoc(field_copy, assoc->free_field, value_copy,
                         assoc->free_value);
 }
 
@@ -271,12 +253,12 @@ http_env_t *copy_http_env(const http_env_t *envelope)
         copy = make_http_env_request(http_env_get_method(envelope),
                                      http_env_get_path(envelope),
                                      http_env_get_protocol(envelope));
-    else copy = make_http_env_response(http_env_get_protocol(envelope),
-                                       http_env_get_code(envelope),
-                                       http_env_get_explanation(envelope));
+    else
+        copy = make_http_env_response(http_env_get_protocol(envelope),
+                                      http_env_get_code(envelope),
+                                      http_env_get_explanation(envelope));
 
-    for (list_elem_t *elem = list_get_first(envelope->headers);
-         elem;
+    for (list_elem_t *elem = list_get_first(envelope->headers); elem;
          elem = list_next(elem)) {
 
         const httpassoc_t *elem_value =
@@ -284,14 +266,11 @@ http_env_t *copy_http_env(const http_env_t *envelope)
 
         httpassoc_t *header_copy = copy_assoc(elem_value);
         list_append(copy->headers, header_copy);
-        FSTRACE(ASYNCHTTP_ENV_COPY_HEADER,
-                copy->uid,
-                header_copy->field,
+        FSTRACE(ASYNCHTTP_ENV_COPY_HEADER, copy->uid, header_copy->field,
                 header_copy->value);
     }
 
-    for (list_elem_t *elem = list_get_first(envelope->trailers);
-         elem;
+    for (list_elem_t *elem = list_get_first(envelope->trailers); elem;
          elem = list_next(elem)) {
 
         const httpassoc_t *elem_value =
@@ -299,9 +278,7 @@ http_env_t *copy_http_env(const http_env_t *envelope)
 
         httpassoc_t *trailer_copy = copy_assoc(elem_value);
         list_append(copy->trailers, trailer_copy);
-        FSTRACE(ASYNCHTTP_ENV_COPY_TRAILER,
-                copy->uid,
-                trailer_copy->field,
+        FSTRACE(ASYNCHTTP_ENV_COPY_TRAILER, copy->uid, trailer_copy->field,
                 trailer_copy->value);
     }
 
@@ -310,7 +287,6 @@ http_env_t *copy_http_env(const http_env_t *envelope)
     FSTRACE(ASYNCHTTP_ENV_COPY, copy->uid, envelope->uid);
     return copy;
 }
-
 
 int compare_case_insensitively(const char *a, const char *b)
 {
@@ -381,8 +357,7 @@ static char *skip_token(char *p, const char *end)
         case '\n':
         case ':':
             return NULL;
-        default:
-            ;
+        default:;
     }
     while (p && p < end)
         switch (*p) {
@@ -495,18 +470,14 @@ static char *unfold_value(char *p, const char *end, char **value_end)
 /* Return a negative number in case of an error. */
 static int evaluate_status_code(const char *status)
 {
-    if (status[0] < '0' || status[0] > '9' ||
-        status[1] < '0' || status[1] > '9' ||
-        status[2] < '0' || status[2] > '9' ||
-        status[3])
+    if (status[0] < '0' || status[0] > '9' || status[1] < '0' ||
+        status[1] > '9' || status[2] < '0' || status[2] > '9' || status[3])
         return -1;
     return status[0] * 100 + status[1] * 10 + status[2] - '0' * 111;
 }
 
-static char *chop_first_header_line(char *p, const char *end,
-                                    const char **f0,
-                                    const char **f1,
-                                    const char **f2)
+static char *chop_first_header_line(char *p, const char *end, const char **f0,
+                                    const char **f1, const char **f2)
 {
     char *f_begin0, *f_begin1, *f_begin2;
     char *f_end0, *f_end1, *f_end2;
@@ -526,8 +497,8 @@ static char *chop_first_header_line(char *p, const char *end,
     return next_line;
 }
 
-static char *chop_field(char *p, const char *end,
-                        const char **field, const char **value)
+static char *chop_field(char *p, const char *end, const char **field,
+                        const char **value)
 {
     char *field_end, *value_end;
     *field = p;
@@ -588,8 +559,8 @@ http_env_t *http_env_parse_response(char *buffer, const char *end)
     return envelope;
 }
 
-http_env_t *http_env_parse_headers(http_env_type_t type,
-                                   char *header_buffer, const char *end)
+http_env_t *http_env_parse_headers(http_env_type_t type, char *header_buffer,
+                                   const char *end)
 {
     switch (type) {
         case HTTP_ENV_REQUEST:
@@ -601,8 +572,8 @@ http_env_t *http_env_parse_headers(http_env_type_t type,
     }
 }
 
-bool http_env_parse_trailers(http_env_t *envelope,
-                             char *buffer, const char *end)
+bool http_env_parse_trailers(http_env_t *envelope, char *buffer,
+                             const char *end)
 {
     char *p = buffer;
     while (p < end && (*p != '\r' && *p != '\n')) {

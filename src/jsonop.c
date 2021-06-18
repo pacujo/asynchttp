@@ -1,18 +1,21 @@
-#include <errno.h>
-#include <assert.h>
-#include <fstrace.h>
-#include <fsdyn/fsalloc.h>
-#include <fsdyn/charstr.h>
-#include <async/jsonencoder.h>
-#include <async/jsondecoder.h>
-#include "client.h"
 #include "jsonop.h"
+
+#include <assert.h>
+#include <errno.h>
+
+#include <async/jsondecoder.h>
+#include <async/jsonencoder.h>
+#include <fsdyn/charstr.h>
+#include <fsdyn/fsalloc.h>
+#include <fstrace.h>
+
 #include "asynchttp_version.h"
+#include "client.h"
 
 typedef enum {
     JSONOP_REQUESTED,
     JSONOP_READING,
-    JSONOP_DONE_200,  /* received 200 OK and parsed the JSON response */
+    JSONOP_DONE_200,   /* received 200 OK and parsed the JSON response */
     JSONOP_DONE_OTHER, /* received something else; content stream available */
     JSONOP_FAILED,
     JSONOP_ZOMBIE
@@ -30,8 +33,8 @@ struct jsonop {
     /* At the moment, we don't give the application access to
      * response_stream. In the end, we can, but note that we need to
      * decide who closes the stream. */
-    bytestream_1 response_stream;       /* JSONOP_DONE_OTHER */
-    int err;                            /* JSONOP_FAILED */
+    bytestream_1 response_stream; /* JSONOP_DONE_OTHER */
+    int err;                      /* JSONOP_FAILED */
 };
 
 FSTRACE_DECL(ASYNCHTTP_JSONOP_REGISTER, "UID=%64u OBJ=%p ACT=%p");
@@ -70,8 +73,8 @@ jsonop_t *jsonop_make_request(async_t *async, http_client_t *client,
     op->uid = fstrace_get_unique_id();
     op->callback = NULL_ACTION_1;
     op->http_op = http_op;
-    http_env_add_header(jsonop_get_request_envelope(op),
-                        "Content-Type", "application/json");
+    http_env_add_header(jsonop_get_request_envelope(op), "Content-Type",
+                        "application/json");
     jsonencoder_t *encoder = json_encode(op->async, request_body);
     FSTRACE(ASYNCHTTP_JSONOP_CREATE, op->uid, op, async, client, uri, encoder);
     ssize_t size = jsonencoder_size(encoder);
@@ -146,8 +149,8 @@ FSTRACE_DECL(ASYNCHTTP_JSONOP_SET_STATE, "UID=%64u OLD=%I NEW=%I");
 
 static void set_op_state(jsonop_t *op, jsonop_state_t state)
 {
-    FSTRACE(ASYNCHTTP_JSONOP_SET_STATE, op->uid,
-            trace_state, &op->state, trace_state, &state);
+    FSTRACE(ASYNCHTTP_JSONOP_SET_STATE, op->uid, trace_state, &op->state,
+            trace_state, &state);
     op->state = state;
 }
 
@@ -292,4 +295,3 @@ void jsonop_close(jsonop_t *op)
     set_op_state(op, JSONOP_ZOMBIE);
     async_wound(op->async, op);
 }
-

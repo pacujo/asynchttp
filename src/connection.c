@@ -1,10 +1,13 @@
-#include <errno.h>
-#include <fstrace.h>
-#include <fsdyn/fsalloc.h>
 #include "connection.h"
+
+#include <errno.h>
+
+#include <fsdyn/fsalloc.h>
+#include <fstrace.h>
+
+#include "asynchttp_version.h"
 #include "decoder.h"
 #include "framer.h"
-#include "asynchttp_version.h"
 
 struct http_conn {
     async_t *async;

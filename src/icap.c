@@ -1,14 +1,13 @@
-#include <stdio.h>
-#include <stdbool.h>
-#include <limits.h>
-#include <errno.h>
-#include <sys/types.h>
-#include <regex.h>
+#include "icap.h"
+
 #include <assert.h>
-#include <fstrace.h>
-#include <fsdyn/fsalloc.h>
-#include <fsdyn/list.h>
-#include <async/queuestream.h>
+#include <errno.h>
+#include <limits.h>
+#include <regex.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <sys/types.h>
+
 #include <async/blobstream.h>
 #include <async/chunkdecoder.h>
 #include <async/chunkencoder.h>
@@ -16,12 +15,15 @@
 #include <async/farewellstream.h>
 #include <async/queuestream.h>
 #include <async/stringstream.h>
-#include "icap.h"
+#include <fsdyn/fsalloc.h>
+#include <fsdyn/list.h>
+#include <fstrace.h>
+
+#include "asynchttp_version.h"
 #include "decoder.h"
 #include "field_reader.h"
-#include "asynchttp_version.h"
 
-static void __attribute__ ((noinline)) protocol_violation(void)
+static void __attribute__((noinline)) protocol_violation(void)
 {
     /* set your breakpoint here*/
     errno = EPROTO;
@@ -56,7 +58,7 @@ typedef struct {
 } transfer_t;
 
 enum {
-    MAX_EXTENSIONS_SIZE = 1000
+    MAX_EXTENSIONS_SIZE = 1000,
 };
 
 struct icap_conn {
@@ -102,7 +104,7 @@ struct icap_conn {
     queuestream_t *outq;
 
     /* ICAP_OUTPUT_OPEN */
-    list_t *pending_transfers;  /* of transfer_t */
+    list_t *pending_transfers; /* of transfer_t */
 };
 
 static const char *RE_ENCAPSULATED =
@@ -155,9 +157,8 @@ FSTRACE_DECL(ASYNCHTTP_ICAP_SET_OUTPUT_STATE, "UID=%64u OLD=%I NEW=%I");
 
 static void set_output_state(icap_conn_t *conn, icap_output_state_t state)
 {
-    FSTRACE(ASYNCHTTP_ICAP_SET_OUTPUT_STATE, conn->uid,
-            trace_output_state, &conn->output_state,
-            trace_output_state, &state);
+    FSTRACE(ASYNCHTTP_ICAP_SET_OUTPUT_STATE, conn->uid, trace_output_state,
+            &conn->output_state, trace_output_state, &state);
     conn->output_state = state;
 }
 
@@ -190,8 +191,8 @@ icap_conn_t *open_icap_connection(async_t *async, bytestream_1 input_stream,
     icap_conn_t *conn = fsalloc(sizeof *conn);
     conn->async = async;
     conn->uid = fstrace_get_unique_id();
-    int status = regcomp(&conn->encapsulated_pattern, RE_ENCAPSULATED,
-                         REG_EXTENDED);
+    int status =
+        regcomp(&conn->encapsulated_pattern, RE_ENCAPSULATED, REG_EXTENDED);
     assert(status == 0);
     conn->input_state = ICAP_INPUT_AWAITING_ICAP_ENVELOPE;
     conn->callback = NULL_ACTION_1;
@@ -223,8 +224,7 @@ static void clear_input(icap_conn_t *conn)
     switch (conn->input_state) {
         case ICAP_INPUT_AWAITING_BODY_CLOSE:
             fsfree(conn->trailer_buffer);
-            push_leftovers(conn,
-                           field_reader_leftover_bytes(conn->reader),
+            push_leftovers(conn, field_reader_leftover_bytes(conn->reader),
                            field_reader_leftover_size(conn->reader));
             /* flow through */
         case ICAP_INPUT_READING_FINAL_EXTENSIONS:
@@ -304,9 +304,8 @@ FSTRACE_DECL(ASYNCHTTP_ICAP_SET_INPUT_STATE, "UID=%64u OLD=%I NEW=%I");
 
 static void set_input_state(icap_conn_t *conn, icap_input_state_t state)
 {
-    FSTRACE(ASYNCHTTP_ICAP_SET_INPUT_STATE, conn->uid,
-            trace_input_state, &conn->input_state,
-            trace_input_state, &state);
+    FSTRACE(ASYNCHTTP_ICAP_SET_INPUT_STATE, conn->uid, trace_input_state,
+            &conn->input_state, trace_input_state, &state);
     conn->input_state = state;
 }
 
@@ -369,8 +368,8 @@ static void enqsize(icap_conn_t *conn, queuestream_t *q, unsigned long size)
     enqstream(q, copy_stringstream(conn->async, buf));
 }
 
-static void enqfield(icap_conn_t *conn, queuestream_t *q,
-                     const char *field, const char *value)
+static void enqfield(icap_conn_t *conn, queuestream_t *q, const char *field,
+                     const char *value)
 {
     enqstr(conn, q, field);
     enqstr(conn, q, ": ");
@@ -439,8 +438,8 @@ static void encode_trailer(icap_conn_t *conn)
 {
     if (conn->output_state == ICAP_OUTPUT_CLOSED)
         return;
-    transfer_t *transfer = (transfer_t *)
-        list_pop_first(conn->pending_transfers);
+    transfer_t *transfer =
+        (transfer_t *) list_pop_first(conn->pending_transfers);
     enqstr(conn, transfer->q,
            http_env_get_final_extensions(transfer->icap_envelope));
     enqstr(conn, transfer->q, "\r\n");
@@ -491,12 +490,9 @@ FSTRACE_DECL(ASYNCHTTP_ICAP_SEND_DISCONNECTED,
 FSTRACE_DECL(ASYNCHTTP_ICAP_SEND,
              "UID=%64u REQ=%p HTTP-REQ=%p HTTP-RESP=%p BODY-TYPE=%I BODY=%p");
 
-void icap_send(icap_conn_t *conn,
-               const http_env_t *icap_envelope,
-               const http_env_t *http_request,
-               const http_env_t *http_response,
-               icap_body_type_t body_type,
-               bytestream_1 body)
+void icap_send(icap_conn_t *conn, const http_env_t *icap_envelope,
+               const http_env_t *http_request, const http_env_t *http_response,
+               icap_body_type_t body_type, bytestream_1 body)
 {
     if (conn->output_state != ICAP_OUTPUT_OPEN) {
         FSTRACE(ASYNCHTTP_ICAP_SEND_DISCONNECTED, conn->uid, icap_envelope,
@@ -596,11 +592,11 @@ static ssize_t scan_offset(const char *s, regmatch_t *pm)
     ssize_t value = 0;
     for (i = pm->rm_so; i < pm->rm_eo; i++) {
         if (value > SSIZE_MAX / 10)
-            return -1;          /* overflow */
+            return -1; /* overflow */
         value *= 10;
         int digit = s[i] - '0';
         if (digit > SSIZE_MAX - value)
-            return -1;          /* overflow */
+            return -1; /* overflow */
         value += digit;
     }
     return value;
@@ -677,8 +673,8 @@ static ssize_t body_read_trailers(icap_conn_t *conn)
     const char *end;
     conn->trailer_buffer = field_reader_combine(conn->reader, &end);
     set_input_state(conn, ICAP_INPUT_AWAITING_BODY_CLOSE);
-    if (!http_env_parse_trailers(conn->trailer_envelope,
-                                 conn->trailer_buffer, end)) {
+    if (!http_env_parse_trailers(conn->trailer_envelope, conn->trailer_buffer,
+                                 end)) {
         clear_input(conn);
         protocol_violation();
         set_input_state(conn, ICAP_INPUT_ERRORED);
@@ -702,14 +698,15 @@ static ssize_t body_read_final_extensions(icap_conn_t *conn)
             clear_input(conn);
             protocol_violation();
             set_input_state(conn, ICAP_INPUT_ERRORED);
-            return - 1;
+            return -1;
         }
         size_t i;
         for (i = 0; i < n; i++)
             if (p[i] == '\n') {
                 if (conn->final_extensions_cursor + i > 0 && p[i - 1] == '\r')
                     p[i - 1] = '\0';
-                else p[i] = '\0';
+                else
+                    p[i] = '\0';
                 http_env_set_final_extensions(conn->icap_envelope,
                                               conn->final_extensions);
                 i++;
@@ -755,8 +752,7 @@ static ssize_t do_read(icap_conn_t *conn, void *buf, size_t count)
         return -1;
     }
     if (n == 0) {
-        push_leftovers(conn,
-                       chunkdecoder_leftover_bytes(conn->chunk_decoder),
+        push_leftovers(conn, chunkdecoder_leftover_bytes(conn->chunk_decoder),
                        chunkdecoder_leftover_size(conn->chunk_decoder));
         conn->final_extensions_cursor = 0;
         set_input_state(conn, ICAP_INPUT_READING_FINAL_EXTENSIONS);
@@ -805,8 +801,8 @@ static void skip_trailers(icap_conn_t *conn)
     conn->trailer_buffer = field_reader_combine(conn->reader, &end);
     /* Change state here so clear_input() cleans up trailer_buffer */
     set_input_state(conn, ICAP_INPUT_AWAITING_BODY_CLOSE);
-    if (!http_env_parse_trailers(conn->trailer_envelope,
-                                 conn->trailer_buffer, end)) {
+    if (!http_env_parse_trailers(conn->trailer_envelope, conn->trailer_buffer,
+                                 end)) {
         clear_input(conn);
         protocol_violation();
         set_input_state(conn, ICAP_INPUT_ERRORED);
@@ -824,9 +820,9 @@ static void skip_final_extensions(icap_conn_t *conn)
 {
     assert(conn->input_state == ICAP_INPUT_SKIPPING_FINAL_EXTENSIONS);
     for (;;) {
-        ssize_t n = queuestream_read(conn->underlying_stream,
-                                     conn->final_extensions,
-                                     sizeof conn->final_extensions);
+        ssize_t n =
+            queuestream_read(conn->underlying_stream, conn->final_extensions,
+                             sizeof conn->final_extensions);
         if (n <= 0) {
             if (n < 0 && errno == EAGAIN)
                 return;
@@ -887,7 +883,8 @@ static void body_probe(icap_conn_t *conn)
         case ICAP_INPUT_READING_TRAILERS:
             if (conn->second_leg_open)
                 action_1_perf(conn->continuation_callback);
-            else action_1_perf(conn->body_callback);
+            else
+                action_1_perf(conn->body_callback);
             break;
         case ICAP_INPUT_SKIPPING_BODY:
             skip_body(conn);
@@ -909,20 +906,16 @@ static void close_transaction(icap_conn_t *conn)
 {
     FSTRACE(ASYNCHTTP_ICAP_CLOSE_TRANSACTION, conn->uid);
     switch (conn->input_state) {
-        case ICAP_INPUT_PASSING_BODY:
-            {
-                set_input_state(conn, ICAP_INPUT_SKIPPING_BODY);
-                action_1 probe_cb = { conn, (act_1) body_probe };
-                async_execute(conn->async, probe_cb);
-            }
-            break;
-        case ICAP_INPUT_READING_TRAILERS:
-            {
-                set_input_state(conn, ICAP_INPUT_SKIPPING_TRAILERS);
-                action_1 probe_cb = { conn, (act_1) body_probe };
-                async_execute(conn->async, probe_cb);
-            }
-            break;
+        case ICAP_INPUT_PASSING_BODY: {
+            set_input_state(conn, ICAP_INPUT_SKIPPING_BODY);
+            action_1 probe_cb = { conn, (act_1) body_probe };
+            async_execute(conn->async, probe_cb);
+        } break;
+        case ICAP_INPUT_READING_TRAILERS: {
+            set_input_state(conn, ICAP_INPUT_SKIPPING_TRAILERS);
+            action_1 probe_cb = { conn, (act_1) body_probe };
+            async_execute(conn->async, probe_cb);
+        } break;
         case ICAP_INPUT_AWAITING_BODY_CLOSE:
         case ICAP_INPUT_AWAITING_UNENCAPSULATED_CLOSE:
             clear_input(conn);
@@ -1021,13 +1014,10 @@ static void input_notification(icap_conn_t *conn)
     action_1_perf(conn->callback);
 }
 
-static const http_env_t *
-receive_http_envelopes(icap_conn_t *conn,
-                       http_env_type_t type,
-                       const http_env_t **http_request,
-                       const http_env_t **http_response,
-                       icap_body_type_t *body_type,
-                       bytestream_1 *body)
+static const http_env_t *receive_http_envelopes(
+    icap_conn_t *conn, http_env_type_t type, const http_env_t **http_request,
+    const http_env_t **http_response, icap_body_type_t *body_type,
+    bytestream_1 *body)
 {
     assert(conn->input_state == ICAP_INPUT_READING_HTTP_ENVELOPES);
     for (;;) {
@@ -1137,8 +1127,8 @@ static const http_env_t *receive_icap_envelope(icap_conn_t *conn,
     set_input_state(conn, ICAP_INPUT_READING_HTTP_ENVELOPES);
     action_1 input_cb = { conn, (act_1) input_notification };
     queuestream_register_callback(conn->underlying_stream, input_cb);
-    return receive_http_envelopes(conn, type, http_request,
-                                  http_response, body_type, body);
+    return receive_http_envelopes(conn, type, http_request, http_response,
+                                  body_type, body);
 }
 
 static const http_env_t *do_receive(icap_conn_t *conn, http_env_type_t type,
@@ -1186,16 +1176,14 @@ FSTRACE_DECL(ASYNCHTTP_ICAP_RECEIVE_FAIL, "UID=%64u ERRNO=%e");
 const http_env_t *icap_receive(icap_conn_t *conn, http_env_type_t type,
                                const http_env_t **http_request,
                                const http_env_t **http_response,
-                               icap_body_type_t *body_type,
-                               bytestream_1 *body)
+                               icap_body_type_t *body_type, bytestream_1 *body)
 {
-    const http_env_t *resp = do_receive(conn, type, http_request, http_response,
-                                        body_type, body);
+    const http_env_t *resp =
+        do_receive(conn, type, http_request, http_response, body_type, body);
     if (resp) {
         const http_env_t *http_req = http_request ? *http_request : NULL;
         const http_env_t *http_resp = http_response ? *http_response : NULL;
-        FSTRACE(ASYNCHTTP_ICAP_RECEIVE,
-                conn->uid, resp, http_req, http_resp,
+        FSTRACE(ASYNCHTTP_ICAP_RECEIVE, conn->uid, resp, http_req, http_resp,
                 trace_body_type, body_type, body->obj);
     } else {
         if (errno == 0)
@@ -1234,8 +1222,8 @@ FSTRACE_DECL(ASYNCHTTP_ICAP_CONTINUATION_REGISTER, "UID=%64u OBJ=%p ACT=%p");
 
 static void continuation_register_callback(icap_conn_t *conn, action_1 action)
 {
-    FSTRACE(ASYNCHTTP_ICAP_CONTINUATION_REGISTER,
-            conn->uid, action.obj, action.act);
+    FSTRACE(ASYNCHTTP_ICAP_CONTINUATION_REGISTER, conn->uid, action.obj,
+            action.act);
     conn->continuation_callback = action;
 }
 
@@ -1263,8 +1251,7 @@ bytestream_1 icap_receive_continuation(icap_conn_t *conn)
     assert(conn->input_state == ICAP_INPUT_AWAITING_BODY_CLOSE);
     assert(!conn->second_leg_open);
     fsfree(conn->trailer_buffer);
-    push_leftovers(conn,
-                   field_reader_leftover_bytes(conn->reader),
+    push_leftovers(conn, field_reader_leftover_bytes(conn->reader),
                    field_reader_leftover_size(conn->reader));
     field_reader_close(conn->reader);
     chunkdecoder_close(conn->chunk_decoder);

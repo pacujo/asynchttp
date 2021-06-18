@@ -1,8 +1,8 @@
 #pragma once
 
-#include "client.h"
-
 #include <fsdyn/bytearray.h>
+
+#include "client.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -16,8 +16,7 @@ typedef struct http_op_response http_op_response_t;
  * from start to finish and returns the response. The response body is
  * buffered, up to the given size.
  */
-http_op_jockey_t *make_http_op_jockey(async_t *async,
-                                      http_op_t *op,
+http_op_jockey_t *make_http_op_jockey(async_t *async, http_op_t *op,
                                       size_t max_body_size);
 
 void http_op_jockey_close(http_op_jockey_t *jockey);

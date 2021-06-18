@@ -1,11 +1,11 @@
 #ifndef __ASYNCHTTP_JSONOP__
 #define __ASYNCHTTP_JSONOP__
 
-#include "client.h"
-#include "envelope.h"
-
 #include <async/async.h>
 #include <encjson.h>
+
+#include "client.h"
+#include "envelope.h"
 
 #ifdef __cplusplus
 extern "C" {

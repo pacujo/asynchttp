@@ -1,8 +1,9 @@
 #ifndef __ASYNCHTTP_CLIENT__
 #define __ASYNCHTTP_CLIENT__
 
-#include <async/tls_connection.h>
 #include <async/fsadns.h>
+#include <async/tls_connection.h>
+
 #include "connection.h"
 
 #ifdef __cplusplus
@@ -42,14 +43,14 @@ void http_client_set_max_envelope_size(http_client_t *client, size_t size);
  *
  * If proxy_host is not compliant to IDNA requirements, false is
  * returned and the function has no effect. */
-bool http_client_set_proxy_2(http_client_t *client,
-                             const char *proxy_host, unsigned port,
-                             const char *username, const char *password);
+bool http_client_set_proxy_2(http_client_t *client, const char *proxy_host,
+                             unsigned port, const char *username,
+                             const char *password);
 
 /* Equivalent to
  * http_client_set_proxy_2(client, proxy_host, port, NULL, NULL). */
-bool http_client_set_proxy(http_client_t *client,
-                           const char *proxy_host, unsigned port);
+bool http_client_set_proxy(http_client_t *client, const char *proxy_host,
+                           unsigned port);
 
 /* Set the proxy address specified in the given URI. The URI must have
  * the following format:
@@ -87,8 +88,7 @@ void http_client_set_tls_ca_bundle(http_client_t *client,
 /* Create an HTTP request from a URI and a content stream. See
  * http_framer_enqueue() in framer.h for the meaning of
  * content_length. */
-http_op_t *http_client_make_request(http_client_t *client,
-                                    const char *method,
+http_op_t *http_client_make_request(http_client_t *client, const char *method,
                                     const char *uri);
 
 /* See http_framer_enqueue() in framer.h for the meaning of

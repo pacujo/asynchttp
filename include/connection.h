@@ -3,9 +3,10 @@
 
 #include <async/async.h>
 #include <async/bytestream_1.h>
+
+#include "decoder.h"
 #include "envelope.h"
 #include "framer.h"
-#include "decoder.h"
 
 #ifdef __cplusplus
 extern "C" {

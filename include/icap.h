@@ -3,6 +3,7 @@
 
 #include <async/async.h>
 #include <async/bytestream_1.h>
+
 #include "envelope.h"
 
 #ifdef __cplusplus
@@ -45,12 +46,9 @@ bytestream_1 icap_get_output_stream(icap_conn_t *conn);
  * updating the trailers of 'http_request' ('http_response') up until
  * the point when 'body' returns an EOF. Trailers are ignored if
  * ICAP_OPT_BODY or ICAP_NULL_BODY is specified. */
-void icap_send(icap_conn_t *conn,
-               const http_env_t *icap_envelope,
-               const http_env_t *http_request,
-               const http_env_t *http_response,
-               icap_body_type_t body_type,
-               bytestream_1 body);
+void icap_send(icap_conn_t *conn, const http_env_t *icap_envelope,
+               const http_env_t *http_request, const http_env_t *http_response,
+               icap_body_type_t body_type, bytestream_1 body);
 
 /* Send the remainder of a body in response to a "100 Continue".
  * 'icap_envelope' is consulted for the final chunk extensions. If
@@ -95,8 +93,7 @@ void icap_terminate(icap_conn_t *conn);
 const http_env_t *icap_receive(icap_conn_t *conn, http_env_type_t type,
                                const http_env_t **http_request,
                                const http_env_t **http_response,
-                               icap_body_type_t *body_type,
-                               bytestream_1 *body);
+                               icap_body_type_t *body_type, bytestream_1 *body);
 
 /* Receive the remainder of a body in response to a "100 Continue".
  * icap_receive_continuation() must be called after reading an EOF from

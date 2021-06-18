@@ -1,21 +1,22 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <stdbool.h>
 #include <errno.h>
-#include <string.h>
-#include <unistd.h>
-#include <regex.h>
-#include <sys/types.h>
-#include <sys/socket.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <regex.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h>
+
+#include <async/async.h>
+#include <async/emptystream.h>
+#include <async/tcp_connection.h>
+#include <async/tls_connection.h>
+#include <asynchttp/connection.h>
 #include <fsdyn/charstr.h>
 #include <fsdyn/fsalloc.h>
-#include <async/async.h>
-#include <async/tls_connection.h>
-#include <async/tcp_connection.h>
-#include <async/emptystream.h>
-#include <asynchttp/connection.h>
 
 static void perrmsg(const char *msg)
 {
@@ -86,9 +87,8 @@ static int resolve_address(const char *host, int port,
     }
 }
 
-static int parse_uri(const char *uri, bool *https,
-                     char **host, int *port, char **path,
-                     struct sockaddr **address, socklen_t *addrlen)
+static int parse_uri(const char *uri, bool *https, char **host, int *port,
+                     char **path, struct sockaddr **address, socklen_t *addrlen)
 {
     regex_t re;
     const char *uripattern =
@@ -118,7 +118,8 @@ static int parse_uri(const char *uri, bool *https,
         fsfree(port_string);
     } else if (*https)
         *port = 443;
-    else *port = 80;
+    else
+        *port = 80;
     *path = make_re_snippet(uri, &match[7]);
     regfree(&re);
     if (!resolve_address(*host, *port, address, addrlen)) {
@@ -184,7 +185,8 @@ static void probe_content(globals_t *g)
             if (g->response_code >= 200 && g->response_code <= 399) {
                 g->success = true;
                 fprintf(stderr, "Done!\n");
-            } else fprintf(stderr, "Done (with an error response)!\n");
+            } else
+                fprintf(stderr, "Done (with an error response)!\n");
             break;
         }
         if (write(STDOUT_FILENO, buf, count) != count) {
@@ -199,15 +201,14 @@ static void probe_content(globals_t *g)
 
 static void probe_receive(globals_t *g)
 {
-    const http_env_t *envelope =
-        http_receive(g->http_conn, HTTP_ENV_RESPONSE);
+    const http_env_t *envelope = http_receive(g->http_conn, HTTP_ENV_RESPONSE);
     if (!envelope) {
         if (errno) {
             if (errno == EAGAIN)
                 return;
             perror("webget");
-        }
-        else fprintf(stderr, "server closed\n");
+        } else
+            fprintf(stderr, "server closed\n");
         close_and_exit(g);
         return;
     }
@@ -216,12 +217,11 @@ static void probe_receive(globals_t *g)
             "Protocol: %s\n"
             "Code: %03d\n"
             "Explanation: %s\n",
-            http_env_get_protocol(envelope),
-            http_env_get_code(envelope),
+            http_env_get_protocol(envelope), http_env_get_code(envelope),
             http_env_get_explanation(envelope));
     g->response_code = http_env_get_code(envelope);
-    if (http_get_content(g->http_conn, HTTP_DECODE_OBEY_HEADER,
-                         &g->content) < 0) {
+    if (http_get_content(g->http_conn, HTTP_DECODE_OBEY_HEADER, &g->content) <
+        0) {
         perror("webget");
         close_and_exit(g);
         return;
@@ -231,11 +231,9 @@ static void probe_receive(globals_t *g)
     async_execute(g->async, probe_content_cb);
 }
 
-static void get_it(globals_t *g,
-                   const struct sockaddr *address, socklen_t addrlen,
-                   bool https, const char *host, int port,
-                   const char *path,
-                   const char *pem_path)
+static void get_it(globals_t *g, const struct sockaddr *address,
+                   socklen_t addrlen, bool https, const char *host, int port,
+                   const char *path, const char *pem_path)
 {
     g->tcp_conn = tcp_connect(g->async, NULL, address, addrlen);
     if (!g->tcp_conn) {
@@ -260,7 +258,8 @@ static void get_it(globals_t *g,
     bytestream_1 http_output = http_get_output_stream(g->http_conn);
     if (https)
         tls_set_plain_output_stream(g->tls_conn, http_output);
-    else tcp_set_output_stream(g->tcp_conn, http_output);
+    else
+        tcp_set_output_stream(g->tcp_conn, http_output);
     action_1 probe_cb = { g, (act_1) probe_receive };
     http_register_callback(g->http_conn, probe_cb);
     async_execute(g->async, probe_cb);
@@ -283,7 +282,7 @@ int main(int argc, const char *const *argv)
     }
     globals_t g = {
         .response_code = -1,
-        .success = false
+        .success = false,
     };
     bool https;
     char *host, *path;

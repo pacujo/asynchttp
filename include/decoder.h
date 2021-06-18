@@ -4,6 +4,7 @@
 #include <async/async.h>
 #include <async/bytestream_1.h>
 #include <async/queuestream.h>
+
 #include "envelope.h"
 
 #ifdef __cplusplus
@@ -20,9 +21,9 @@ http_decoder_t *open_http_decoder(async_t *async, bytestream_1 input_stream,
 void http_decoder_close(http_decoder_t *decoder);
 
 enum {
-    HTTP_DECODE_CHUNKED = -1,     /* assume chunked encoding */
-    HTTP_DECODE_EXHAUST = -2,     /* content ends with end-of-stream */
-    HTTP_DECODE_OBEY_HEADER = -3  /* inspect headers for content size */
+    HTTP_DECODE_CHUNKED = -1,    /* assume chunked encoding */
+    HTTP_DECODE_EXHAUST = -2,    /* content ends with end-of-stream */
+    HTTP_DECODE_OBEY_HEADER = -3 /* inspect headers for content size */
 };
 
 /* Read out the headers of the next HTTP message from the decoder's

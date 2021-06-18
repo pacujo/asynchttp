@@ -1,14 +1,17 @@
-#include <stdio.h>
+#include "framer.h"
+
 #include <assert.h>
-#include <fstrace.h>
-#include <fsdyn/list.h>
-#include <fsdyn/fsalloc.h>
-#include <async/stringstream.h>
-#include <async/queuestream.h>
+#include <stdio.h>
+
 #include <async/chunkencoder.h>
 #include <async/farewellstream.h>
 #include <async/probestream.h>
-#include "framer.h"
+#include <async/queuestream.h>
+#include <async/stringstream.h>
+#include <fsdyn/fsalloc.h>
+#include <fsdyn/list.h>
+#include <fstrace.h>
+
 #include "asynchttp_version.h"
 
 typedef enum {
@@ -27,9 +30,9 @@ struct http_framer {
     action_1 farewell_action;
     chunked_state_t chunked_state;
     const http_env_t *envelope;
-    chunkencoder_t *chunker;    /* CHUNKED_BODY */
-    action_1 chunks_callback;   /* CHUNKED_BODY */
-    queuestream_t *trailerq;    /* CHUNKED_TRAILER */
+    chunkencoder_t *chunker;  /* CHUNKED_BODY */
+    action_1 chunks_callback; /* CHUNKED_BODY */
+    queuestream_t *trailerq;  /* CHUNKED_TRAILER */
 };
 
 FSTRACE_DECL(ASYNCHTTP_FRAMER_CLOSE, "UID=%64u");
@@ -99,16 +102,15 @@ static void enqcode(http_framer_t *framer, queuestream_t *q, unsigned code)
     enqstream(q, copy_stringstream(framer->async, buf));
 }
 
-static void enqsize(http_framer_t *framer, queuestream_t *q,
-                    unsigned long size)
+static void enqsize(http_framer_t *framer, queuestream_t *q, unsigned long size)
 {
     char buf[50];
     sprintf(buf, "%lu", size);
     enqstream(q, copy_stringstream(framer->async, buf));
 }
 
-static void enqfield(http_framer_t *framer, queuestream_t *q,
-                     const char *field, const char *value)
+static void enqfield(http_framer_t *framer, queuestream_t *q, const char *field,
+                     const char *value)
 {
     enqstr(framer, q, field);
     enqstr(framer, q, ": ");
@@ -161,8 +163,8 @@ FSTRACE_DECL(ASYNCHTTP_FRAMER_SET_CHUNKED_STATE, "UID=%64u OLD=%I NEW=%I");
 static void set_chunked_state(http_framer_t *framer, chunked_state_t state)
 {
     FSTRACE(ASYNCHTTP_FRAMER_SET_CHUNKED_STATE, framer->uid,
-            trace_chunked_state, &framer->chunked_state,
-            trace_chunked_state, &state);
+            trace_chunked_state, &framer->chunked_state, trace_chunked_state,
+            &state);
     framer->chunked_state = state;
 }
 
@@ -232,8 +234,8 @@ FSTRACE_DECL(ASYNCHTTP_FRAMER_CHUNKS_REGISTER, "UID=%64u OBJ=%p ACT=%p");
 static void chunks_register_callback(void *obj, action_1 action)
 {
     http_framer_t *framer = obj;
-    FSTRACE(ASYNCHTTP_FRAMER_CHUNKS_REGISTER,
-            framer->uid, action.obj, action.act);
+    FSTRACE(ASYNCHTTP_FRAMER_CHUNKS_REGISTER, framer->uid, action.obj,
+            action.act);
     switch (framer->chunked_state) {
         case CHUNKED_BODY:
             framer->chunks_callback = action;
@@ -242,8 +244,7 @@ static void chunks_register_callback(void *obj, action_1 action)
         case CHUNKED_TRAILER:
             queuestream_register_callback(framer->trailerq, action);
             break;
-        default:
-            ;
+        default:;
     }
 }
 
@@ -261,8 +262,7 @@ static void chunks_unregister_callback(void *obj)
         case CHUNKED_TRAILER:
             queuestream_unregister_callback(framer->trailerq);
             break;
-        default:
-            ;
+        default:;
     }
 }
 
@@ -270,16 +270,15 @@ static struct bytestream_1_vt chunks_vt = {
     .read = chunks_read,
     .close = chunks_close,
     .register_callback = chunks_register_callback,
-    .unregister_callback = chunks_unregister_callback
+    .unregister_callback = chunks_unregister_callback,
 };
 
 static void encode_chunked(http_framer_t *framer, queuestream_t *q,
                            bytestream_1 content)
 {
     enqstr(framer, q, "Transfer-encoding: chunked\r\n\r\n");
-    framer->chunker =
-        chunk_encode_2(framer->async, content, 2000,
-                       CHUNKENCODER_STOP_AT_FINAL_EXTENSIONS);
+    framer->chunker = chunk_encode_2(framer->async, content, 2000,
+                                     CHUNKENCODER_STOP_AT_FINAL_EXTENSIONS);
     framer->chunks_callback = NULL_ACTION_1;
     queuestream_enqueue(q, (bytestream_1) { framer, &chunks_vt });
     set_chunked_state(framer, CHUNKED_BODY);

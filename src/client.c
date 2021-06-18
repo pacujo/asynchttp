@@ -1,19 +1,22 @@
+#include "client.h"
+
+#include <assert.h>
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
-#include <errno.h>
-#include <assert.h>
-#include <fstrace.h>
-#include <fsdyn/fsalloc.h>
-#include <fsdyn/charstr.h>
-#include <fsdyn/list.h>
-#include <fsdyn/base64.h>
+
 #include <async/emptystream.h>
 #include <async/farewellstream.h>
 #include <async/switchstream.h>
 #include <async/tcp_client.h>
 #include <async/tls_connection.h>
+#include <fsdyn/base64.h>
+#include <fsdyn/charstr.h>
+#include <fsdyn/fsalloc.h>
+#include <fsdyn/list.h>
+#include <fstrace.h>
 #include <nwutil.h>
-#include "client.h"
+
 #include "asynchttp_version.h"
 
 enum {
@@ -25,7 +28,7 @@ enum {
 typedef enum {
     PROXY_SYSTEM,
     PROXY_DIRECT,
-    PROXY_EXPLICIT
+    PROXY_EXPLICIT,
 } proxy_mode_t;
 
 struct http_client {
@@ -33,13 +36,13 @@ struct http_client {
     async_t *async;
     uint64_t uid;
     fsadns_t *dns;
-    list_t *operations;         /* of http_op_t */
-    list_t *free_conn_pool;     /* of pool_elem_t */
+    list_t *operations;     /* of http_op_t */
+    list_t *free_conn_pool; /* of pool_elem_t */
     size_t max_envelope_size;
     proxy_mode_t proxy_mode;
-    char *proxy_host;           /* NULL if no proxy */
+    char *proxy_host; /* NULL if no proxy */
     unsigned proxy_port;
-    char *proxy_authorization;  /* no proxy authorization if NULL */
+    char *proxy_authorization; /* no proxy authorization if NULL */
     tls_ca_bundle_t *ca_bundle;
     action_1 callback;
 };
@@ -111,16 +114,16 @@ struct http_op {
     http_client_t *client;
     uint64_t uid;
     tls_ca_bundle_t *ca_bundle;
-    list_elem_t *loc;           /* in client->operations */
+    list_elem_t *loc; /* in client->operations */
     http_op_state_t state;
     bool https;
-    char *proxy_host;           /* no proxy if NULL */
+    char *proxy_host; /* no proxy if NULL */
     unsigned proxy_port;
-    char *proxy_authorization;  /* no proxy authorization if NULL */
+    char *proxy_authorization; /* no proxy authorization if NULL */
     char *host;
     unsigned port;
-    char *host_entry;           /* host[:port] */
-    char *connect_entry;        /* host:port or NULL*/
+    char *host_entry;    /* host[:port] */
+    char *connect_entry; /* host:port or NULL*/
     char *method;
     char *path;
     http_env_t *request;
@@ -200,8 +203,8 @@ static void close_stack(protocol_stack_t stack)
 static void flush_free_conn_pool(http_client_t *client)
 {
     while (!list_empty(client->free_conn_pool)) {
-        pool_elem_t *pe = (pool_elem_t *)
-            list_elem_get_value(list_get_first(client->free_conn_pool));
+        pool_elem_t *pe = (pool_elem_t *) list_elem_get_value(
+            list_get_first(client->free_conn_pool));
         async_timer_cancel(client->async, pe->timer);
         close_stack(peel_pool_element(pe));
     }
@@ -255,8 +258,7 @@ static char *make_proxy_authorization(const char *username,
     if (!username || !password)
         return NULL;
     char *credentials = charstr_printf("%s:%s", username, password);
-    char *encoding =
-        base64_encode_simple(credentials, strlen(credentials));
+    char *encoding = base64_encode_simple(credentials, strlen(credentials));
     fsfree(credentials);
     char *auth = charstr_printf("Basic %s", encoding);
     fsfree(encoding);
@@ -264,8 +266,7 @@ static char *make_proxy_authorization(const char *username,
 }
 
 /* proxy_host is moved; username and password are not */
-static void set_proxy(http_client_t *client,
-                      char *proxy_host, unsigned port,
+static void set_proxy(http_client_t *client, char *proxy_host, unsigned port,
                       const char *username, const char *password)
 {
     fsfree(client->proxy_host);
@@ -283,13 +284,12 @@ FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_PROXY,
 FSTRACE_DECL(ASYNCHTTP_CLIENT_NON_IDNA_PROXY_HOST, "UID=%64u");
 FSTRACE_DECL(ASYNCHTTP_CLIENT_IDNA_PROXY_HOST, "UID=%64u IDNA=%s");
 
-
-bool http_client_set_proxy_2(http_client_t *client,
-                             const char *proxy_host, unsigned port,
-                             const char *username, const char *password)
+bool http_client_set_proxy_2(http_client_t *client, const char *proxy_host,
+                             unsigned port, const char *username,
+                             const char *password)
 {
-    FSTRACE(ASYNCHTTP_CLIENT_SET_PROXY, client->uid, proxy_host, port,
-            username, password);
+    FSTRACE(ASYNCHTTP_CLIENT_SET_PROXY, client->uid, proxy_host, port, username,
+            password);
     char *idna = NULL;
     if (proxy_host) {
         idna = charstr_idna_encode(proxy_host);
@@ -303,8 +303,8 @@ bool http_client_set_proxy_2(http_client_t *client,
     return true;
 }
 
-bool http_client_set_proxy(http_client_t *client,
-                           const char *proxy_host, unsigned port)
+bool http_client_set_proxy(http_client_t *client, const char *proxy_host,
+                           unsigned port)
 {
     return http_client_set_proxy_2(client, proxy_host, port, NULL, NULL);
 }
@@ -365,8 +365,7 @@ static bool percent_decode(const char *encoding, char **decoding)
 FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI, "UID=%64u URI=%s");
 FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_SYNTAX_ERROR,
              "UID=%64u URI=%s");
-FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_BAD_SCHEME,
-             "UID=%64u URI=%s");
+FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_BAD_SCHEME, "UID=%64u URI=%s");
 FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_BAD_USERNAME,
              "UID=%64u URI=%s");
 FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_BAD_PASSWORD,
@@ -376,8 +375,8 @@ bool http_client_set_proxy_from_uri(http_client_t *client, const char *uri)
 {
     nwutil_url_t *url = nwutil_parse_url(uri, strlen(uri), NULL);
     if (!url) {
-        FSTRACE(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_SYNTAX_ERROR,
-                client->uid, uri);
+        FSTRACE(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_SYNTAX_ERROR, client->uid,
+                uri);
         return false;
     }
     const char *scheme = nwutil_url_get_scheme(url);
@@ -387,8 +386,8 @@ bool http_client_set_proxy_from_uri(http_client_t *client, const char *uri)
     else if (!strcmp(scheme, "https"))
         port = DEFAULT_PORT_HTTPS;
     else {
-        FSTRACE(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_BAD_SCHEME,
-                client->uid, uri);
+        FSTRACE(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_BAD_SCHEME, client->uid,
+                uri);
         nwutil_url_destroy(url);
         return false;
     }
@@ -397,15 +396,15 @@ bool http_client_set_proxy_from_uri(http_client_t *client, const char *uri)
     const char *host = nwutil_url_get_host(url);
     char *username;
     if (!percent_decode(nwutil_url_get_username(url), &username)) {
-        FSTRACE(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_BAD_USERNAME,
-                client->uid, uri);
+        FSTRACE(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_BAD_USERNAME, client->uid,
+                uri);
         nwutil_url_destroy(url);
         return false;
     }
     char *password;
     if (!percent_decode(nwutil_url_get_password(url), &password)) {
-        FSTRACE(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_BAD_PASSWORD,
-                client->uid, uri);
+        FSTRACE(ASYNCHTTP_CLIENT_SET_PROXY_FROM_URI_BAD_PASSWORD, client->uid,
+                uri);
         fsfree(username);
         nwutil_url_destroy(url);
         return false;
@@ -477,8 +476,7 @@ static bool learn_op_proxy(http_op_t *op, const char *uri)
             return true;
         default:
             assert(false);
-        case PROXY_SYSTEM:
-            ;
+        case PROXY_SYSTEM:;
     }
     nwutil_http_proxy_settings_t *settings =
         nwutil_get_global_http_proxy_settings_1(uri);
@@ -492,8 +490,7 @@ static bool learn_op_proxy(http_op_t *op, const char *uri)
         op->proxy_authorization =
             make_proxy_authorization(nwutil_http_proxy_user(settings),
                                      nwutil_http_proxy_password(settings));
-        FSTRACE(ASYNCHTTP_OP_LEARN_GLOBAL_PROXY,
-                client->uid, op->proxy_host,
+        FSTRACE(ASYNCHTTP_OP_LEARN_GLOBAL_PROXY, client->uid, op->proxy_host,
                 op->proxy_port, op->proxy_authorization);
     }
     nwutil_release_http_proxy_settings(settings);
@@ -538,9 +535,8 @@ static bool parse_uri(http_op_t *op, const char *uri)
         const char *f = "#", *fragment = nwutil_url_get_fragment(url);
         if (!fragment)
             f = fragment = "";
-        op->path =
-            charstr_printf("%s%s%s%s%s",
-                           nwutil_url_get_path(url), q, query, f, fragment);
+        op->path = charstr_printf("%s%s%s%s%s", nwutil_url_get_path(url), q,
+                                  query, f, fragment);
     }
     nwutil_url_destroy(url);
     return true;
@@ -550,8 +546,8 @@ FSTRACE_DECL(ASYNCHTTP_OP_CREATE_FAIL, "CLIENT=%64u METHOD=%s URI=%s");
 FSTRACE_DECL(ASYNCHTTP_OP_CREATE,
              "UID=%64u PTR=%p CLIENT=%64u METHOD=%s URI=%s");
 
-http_op_t *http_client_make_request(http_client_t *client,
-                                    const char *method, const char *uri)
+http_op_t *http_client_make_request(http_client_t *client, const char *method,
+                                    const char *uri)
 {
     http_op_t *op = fsalloc(sizeof *op);
     op->client = client;
@@ -611,9 +607,8 @@ FSTRACE_DECL(ASYNCHTTP_OP_SET_TIMER_STATE, "UID=%64u OLD=%I NEW=%I");
 
 static void set_timer_state(http_op_t *op, http_op_timer_state_t timer_state)
 {
-    FSTRACE(ASYNCHTTP_OP_SET_TIMER_STATE, op->uid,
-            trace_timer_state, &op->timer_state,
-            trace_timer_state, &timer_state);
+    FSTRACE(ASYNCHTTP_OP_SET_TIMER_STATE, op->uid, trace_timer_state,
+            &op->timer_state, trace_timer_state, &timer_state);
     op->timer_state = timer_state;
 }
 
@@ -656,8 +651,7 @@ static void op_timeout(http_op_t *op)
             FSTRACE(ASYNCHTTP_OP_TIMEOUT_NOTIFY_STREAM, op->uid);
             action_1_perf(op->response_content_callback);
             break;
-        default:
-            ;
+        default:;
     }
 }
 
@@ -672,8 +666,7 @@ static void op_cancel_timeout(http_op_t *op)
         case HTTP_OP_TIMER_EXPIRED:
             set_timer_state(op, HTTP_OP_TIMER_CANCELED);
             break;
-        default:
-            ;
+        default:;
     }
 }
 
@@ -708,16 +701,14 @@ FSTRACE_DECL(ASYNCHTTP_OP_REUSE,
              "UID=%64u HOST=%s PORT=%u PROTO=%s POOL-ID=%64u");
 FSTRACE_DECL(ASYNCHTTP_OP_CANNOT_REUSE, "UID=%64u HOST=%s PORT=%u PROTO=%s");
 
-static bool reuse_connection(http_op_t *op,
-                             const char *host, unsigned port,
+static bool reuse_connection(http_op_t *op, const char *host, unsigned port,
                              bool https)
 {
     list_elem_t *e, *next;
     for (e = list_get_first(op->client->free_conn_pool); e; e = next) {
         next = list_next(e);
         pool_elem_t *pe = (pool_elem_t *) list_elem_get_value(e);
-        if (!strcmp(pe->host, host) && pe->port == port &&
-            pe->https == https &&
+        if (!strcmp(pe->host, host) && pe->port == port && pe->https == https &&
             tls_ca_bundle_equal(pe->ca_bundle, op->ca_bundle)) {
             async_timer_cancel(pe->client->async, pe->timer);
             FSTRACE(ASYNCHTTP_OP_REUSE, op->uid, host, port,
@@ -777,13 +768,13 @@ static void op_send_request_via_proxy(http_op_t *op)
         FSTRACE(ASYNCHTTP_OP_SEND_VIA_PROXY_REUSING, op->uid);
         if (op->https)
             op_send_http_connect(op);
-        else op_dispatch(op);
+        else
+            op_dispatch(op);
         return;
     }
     FSTRACE(ASYNCHTTP_OP_SEND_VIA_PROXY, op->uid);
-    op->tcp_client =
-        open_tcp_client_2(op->client->async, op->proxy_host, op->proxy_port,
-                          op->client->dns);
+    op->tcp_client = open_tcp_client_2(op->client->async, op->proxy_host,
+                                       op->proxy_port, op->client->dns);
     action_1 probe_cb = { op, (act_1) op_probe };
     tcp_client_register_callback(op->tcp_client, probe_cb);
     set_op_state(op, HTTP_OP_CONNECTING_TO_PROXY);
@@ -805,9 +796,8 @@ static void op_send_request(http_op_t *op)
         return;
     }
     FSTRACE(ASYNCHTTP_OP_SEND_DIRECTLY, op->uid);
-    op->tcp_client =
-        open_tcp_client_2(op->client->async, op->host, op->port,
-                          op->client->dns);
+    op->tcp_client = open_tcp_client_2(op->client->async, op->host, op->port,
+                                       op->client->dns);
     action_1 probe_cb = { op, (act_1) op_probe };
     tcp_client_register_callback(op->tcp_client, probe_cb);
     set_op_state(op, HTTP_OP_CONNECTING_DIRECTLY);
@@ -849,7 +839,8 @@ static const http_env_t *op_receive_via_proxy(http_op_t *op)
         return NULL;
     if (op->https)
         op_send_http_connect(op);
-    else op_dispatch(op);
+    else
+        op_dispatch(op);
     return http_op_receive_response(op);
 }
 
@@ -873,12 +864,9 @@ FSTRACE_DECL(ASYNCHTTP_OP_RECEIVE_RECYCLE, "UID=%64u RECYCLE=%b");
 static void response_received(http_op_t *op, const http_env_t *response)
 {
     set_op_state(op, HTTP_OP_RECEIVED);
-    const char *field =
-        http_env_get_matching_header(response, "connection");
-    op->recycle_connection =
-        op->recycle_connection &&
-        charstr_case_cmp(http_env_get_protocol(response),
-                         "HTTP/1.1") >= 0 &&
+    const char *field = http_env_get_matching_header(response, "connection");
+    op->recycle_connection = op->recycle_connection &&
+        charstr_case_cmp(http_env_get_protocol(response), "HTTP/1.1") >= 0 &&
         (!field || strcmp(field, "close"));
     FSTRACE(ASYNCHTTP_OP_RECEIVE_RECYCLE, op->uid, op->recycle_connection);
 }
@@ -924,7 +912,8 @@ static const http_env_t *op_receive_response(http_op_t *op)
         if (code == 204 || (code >= 100 && code <= 199) || code == 304 ||
             !charstr_case_cmp(op->method, "head"))
             op->response_content_length = 0;
-        else op->response_content_length = HTTP_DECODE_OBEY_HEADER;
+        else
+            op->response_content_length = HTTP_DECODE_OBEY_HEADER;
     }
     return response;
 }
@@ -969,7 +958,7 @@ const http_env_t *http_op_receive_response(http_op_t *op)
             break;
         default:
             FSTRACE(ASYNCHTTP_OP_RECEIVE_EOF, op->uid);
-            errno = 0;          /* pseudo-EOF */
+            errno = 0; /* pseudo-EOF */
             response = NULL;
     }
     errno = again_or_timeout(op, errno);
@@ -1001,8 +990,8 @@ static void move_connection_to_pool(http_op_t *op)
     pe->https = op->https;
     pe->stack = op->stack;
     action_1 pe_cb = { pe, (act_1) pool_elem_timeout };
-    uint64_t expiry = async_now(client->async) +
-        STALE_CONNECTION_TIMEOUT * ASYNC_S;
+    uint64_t expiry =
+        async_now(client->async) + STALE_CONNECTION_TIMEOUT * ASYNC_S;
     pe->timer = async_timer_start(client->async, expiry, pe_cb);
     pe->loc = list_append(client->free_conn_pool, pe);
 }
@@ -1020,13 +1009,15 @@ static void response_closed(http_op_t *op)
         case HTTP_OP_STREAMING:
             if (op->recycle_connection)
                 move_connection_to_pool(op);
-            else close_stack(op->stack);
+            else
+                close_stack(op->stack);
             set_op_state(op, HTTP_OP_STREAM_CLOSED);
             break;
         case HTTP_OP_CLOSED_STREAMING:
             if (op->recycle_connection)
                 move_connection_to_pool(op);
-            else close_stack(op->stack);
+            else
+                close_stack(op->stack);
             set_op_state(op, HTTP_OP_STREAM_CLOSED);
             do_close(op);
             break;
@@ -1114,14 +1105,13 @@ int http_op_get_response_content(http_op_t *op, bytestream_1 *content)
             return -1;
         default:
             FSTRACE(ASYNCHTTP_OP_GET_RESPONSE_CONTENT_FAIL, op->uid);
-            errno = 0;          /* pseudo-EOF */
+            errno = 0; /* pseudo-EOF */
             return -1;
-        case HTTP_OP_RECEIVED:
-            ;
+        case HTTP_OP_RECEIVED:;
     }
     bytestream_1 stream;
-    if (http_get_content(op->stack.http_conn,
-                         op->response_content_length, &stream) < 0) {
+    if (http_get_content(op->stack.http_conn, op->response_content_length,
+                         &stream) < 0) {
         errno = again_or_timeout(op, errno);
         FSTRACE(ASYNCHTTP_OP_GET_RESPONSE_CONTENT_FAIL, op->uid);
         return -1;

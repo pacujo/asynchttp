@@ -9,7 +9,7 @@ extern "C" {
 
 typedef enum {
     HTTP_ENV_REQUEST,
-    HTTP_ENV_RESPONSE
+    HTTP_ENV_RESPONSE,
 } http_env_type_t;
 
 typedef struct http_env http_env_t;
@@ -30,8 +30,7 @@ void destroy_http_env(http_env_t *envelope);
 
 /* Add header to the envelope. The strings passed must stay valid throughout the
  * lifetime of the envelope. */
-void http_env_add_header(http_env_t *envelope,
-                         const char *field,
+void http_env_add_header(http_env_t *envelope, const char *field,
                          const char *value);
 
 /* Add header to the envelope.
@@ -40,17 +39,13 @@ void http_env_add_header(http_env_t *envelope,
  * and will deallocate it using fsfree() on destruction. If free_field is false,
  * the field must stay valid throughout the lifetime of the envelope. The
  * behavior for the value argument is analogous. */
-void http_env_add_header_2(http_env_t *envelope,
-                           char *field,
-                           bool free_field,
-                           char *value,
-                           bool free_value);
+void http_env_add_header_2(http_env_t *envelope, char *field, bool free_field,
+                           char *value, bool free_value);
 
 /* Chunked encoding supports trailer fields that are appended to the
  * message body. The strings passed must stay valid throughout the lifetime of
  * the envelope. */
-void http_env_add_trailer(http_env_t *envelope,
-                          const char *field,
+void http_env_add_trailer(http_env_t *envelope, const char *field,
                           const char *value);
 
 /* Add trailer to the envelope.
@@ -59,11 +54,8 @@ void http_env_add_trailer(http_env_t *envelope,
  * and will deallocate it using fsfree() on destruction. If free_field is false,
  * the field must stay valid throughout the lifetime of the envelope. The
  * behavior for the value argument is analogous. */
-void http_env_add_trailer_2(http_env_t *envelope,
-                            char *field,
-                            bool free_field,
-                            char *value,
-                            bool free_value);
+void http_env_add_trailer_2(http_env_t *envelope, char *field, bool free_field,
+                            char *value, bool free_value);
 
 /* Chunked encoding supports extensions that are appended to the chunk
  * length. This function allows you to specify the extensions for the
@@ -143,12 +135,12 @@ http_env_t *http_env_parse_request(char *buffer, const char *end);
 http_env_t *http_env_parse_response(char *buffer, const char *end);
 
 /* Return NULL in case of an error. */
-http_env_t *http_env_parse_headers(http_env_type_t type,
-                                   char *header_buffer, const char *end);
+http_env_t *http_env_parse_headers(http_env_type_t type, char *header_buffer,
+                                   const char *end);
 
 /* Return false in case of an error. */
-bool http_env_parse_trailers(http_env_t *envelope,
-                             char *buffer, const char *end);
+bool http_env_parse_trailers(http_env_t *envelope, char *buffer,
+                             const char *end);
 
 #ifdef __cplusplus
 }

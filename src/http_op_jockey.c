@@ -1,9 +1,9 @@
 #include "http_op_jockey.h"
 
+#include <errno.h>
+
 #include <async/drystream.h>
 #include <fstrace.h>
-
-#include <errno.h>
 
 struct http_op_response {
     const http_env_t *envelope;
@@ -43,8 +43,7 @@ struct http_op_jockey {
 
 FSTRACE_DECL(ASYNCHTTP_OP_JOCKEY_CREATE, "UID=%64u OP=%p MAX-BODY-SIZE=%z");
 
-http_op_jockey_t *make_http_op_jockey(async_t *async,
-                                      http_op_t *op,
+http_op_jockey_t *make_http_op_jockey(async_t *async, http_op_t *op,
                                       size_t max_body_size)
 {
     http_op_jockey_t *jockey = fscalloc(1, sizeof *jockey);
@@ -113,12 +112,8 @@ FSTRACE_DECL(ASYNCHTTP_OP_JOCKEY_SET_STATE, "UID=%64u OLD=%I NEW=%I");
 
 static void set_state(http_op_jockey_t *jockey, http_op_jockey_state_t state)
 {
-    FSTRACE(ASYNCHTTP_OP_JOCKEY_SET_STATE,
-            jockey->uid,
-            trace_state,
-            &jockey->state,
-            trace_state,
-            &state);
+    FSTRACE(ASYNCHTTP_OP_JOCKEY_SET_STATE, jockey->uid, trace_state,
+            &jockey->state, trace_state, &state);
     jockey->state = state;
 }
 
@@ -130,10 +125,8 @@ static ssize_t read_frame(void *obj, void *buf, size_t count)
 
 static void probe_body(http_op_jockey_t *jockey)
 {
-    ssize_t count = byte_array_append_stream(jockey->response.body,
-                                             read_frame,
-                                             &jockey->content,
-                                             2048);
+    ssize_t count = byte_array_append_stream(jockey->response.body, read_frame,
+                                             &jockey->content, 2048);
     if (count < 0 && errno == ENOSPC) {
         char c;
         count = bytestream_1_read(jockey->content, &c, 1);
@@ -172,10 +165,8 @@ static void probe_headers(http_op_jockey_t *jockey)
         }
         return;
     }
-    FSTRACE(ASYNCHTTP_OP_JOCKEY_GOT_RESPONSE,
-            jockey->uid,
-            http_env_get_code(envelope),
-            http_env_get_explanation(envelope));
+    FSTRACE(ASYNCHTTP_OP_JOCKEY_GOT_RESPONSE, jockey->uid,
+            http_env_get_code(envelope), http_env_get_explanation(envelope));
     if (http_op_get_response_content(jockey->op, &jockey->content) < 0) {
         jockey->error = errno;
         set_state(jockey, HTTP_OP_JOCKEY_FAILED);

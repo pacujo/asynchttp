@@ -1,21 +1,22 @@
-#include <stdio.h>
-#include <stdbool.h>
-#include <stdlib.h>
 #include <errno.h>
-#include <string.h>
-#include <unistd.h>
-#include <regex.h>
-#include <sys/types.h>
-#include <sys/socket.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <regex.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h>
+
+#include <async/async.h>
+#include <async/blockingstream.h>
+#include <async/emptystream.h>
+#include <async/tcp_connection.h>
+#include <asynchttp/icap.h>
 #include <fsdyn/charstr.h>
 #include <fsdyn/fsalloc.h>
-#include <async/async.h>
-#include <async/tcp_connection.h>
-#include <async/emptystream.h>
-#include <async/blockingstream.h>
-#include <asynchttp/icap.h>
 
 static void perrmsg(const char *msg)
 {
@@ -114,7 +115,8 @@ static int parse_uri(const char *uri, char **host, int *port, char **path,
     if (port_string) {
         *port = atoi(port_string);
         fsfree(port_string);
-    } else *port = 1344;
+    } else
+        *port = 1344;
     *path = make_re_snippet(uri, &match[0]);
     regfree(&re);
     if (!resolve_address(*host, *port, address, addrlen)) {
@@ -189,15 +191,15 @@ static void probe_receive(globals_t *g)
 {
     icap_body_type_t body_type;
     const http_env_t *envelope =
-        icap_receive(g->icap_conn, HTTP_ENV_RESPONSE, NULL, NULL,
-                     &body_type, &g->content);
+        icap_receive(g->icap_conn, HTTP_ENV_RESPONSE, NULL, NULL, &body_type,
+                     &g->content);
     if (!envelope) {
         if (errno) {
             if (errno == EAGAIN)
                 return;
             perror("icapscan");
-        }
-        else fprintf(stderr, "server closed\n");
+        } else
+            fprintf(stderr, "server closed\n");
         icap_close(g->icap_conn);
         async_quit_loop(g->async);
         return;
@@ -207,8 +209,7 @@ static void probe_receive(globals_t *g)
             "Protocol: %s\n"
             "Code: %03d\n"
             "Explanation: %s\n",
-            http_env_get_protocol(envelope),
-            http_env_get_code(envelope),
+            http_env_get_protocol(envelope), http_env_get_code(envelope),
             http_env_get_explanation(envelope));
     switch (body_type) {
         case ICAP_REQ_BODY:
