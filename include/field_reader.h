@@ -1,6 +1,8 @@
 #ifndef __ASYNCHTTP_FIELD_READER__
 #define __ASYNCHTTP_FIELD_READER__
 
+#include <async/bytestream_1.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
