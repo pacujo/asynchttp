@@ -18,10 +18,11 @@ include = env.Install(
 )
 lib = env.Install('lib', ['../../src/libasynchttp.a'])
 
-env.Alias(
-    'install',
-    env.Install(os.path.join(env['PREFIX'], 'include/asynchttp'), include),
-)
-env.Alias('install', env.Install(os.path.join(env['PREFIX'], 'lib'), lib))
+if env["HOST_ARCH"] == env["ARCH"]:
+    env.Alias(
+        'install',
+        env.Install(os.path.join(env['PREFIX'], 'include/asynchttp'), include),
+    )
+    env.Alias('install', env.Install(os.path.join(env['PREFIX'], 'lib'), lib))
 
-env['CONFIG_BUILDER'](env)
+env.FSEnvInstallCommonLibConfig()
