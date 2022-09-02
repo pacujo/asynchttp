@@ -88,7 +88,7 @@ static void set_reader_state(field_reader_t *reader, field_reader_state_t state)
 }
 
 FSTRACE_DECL(ASYNCHTTP_FIELD_READER_READ, "UID=%64u WANT=%z GOT=%z ERRNO=%e");
-FSTRACE_DECL(ASYNCHTTP_FIELD_READER_READ_DUMP, "UID=%64u TEXT=%A");
+FSTRACE_DECL(ASYNCHTTP_FIELD_READER_READ_DUMP, "UID=%64u DATA=%A");
 
 int field_reader_read(field_reader_t *reader)
 {

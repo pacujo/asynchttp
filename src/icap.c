@@ -762,7 +762,7 @@ static ssize_t do_read(icap_conn_t *conn, void *buf, size_t count)
 }
 
 FSTRACE_DECL(ASYNCHTTP_ICAP_CONTENT_READ, "UID=%64u WANT=%z GOT=%z ERRNO=%e");
-FSTRACE_DECL(ASYNCHTTP_ICAP_CONTENT_READ_DUMP, "UID=%64u DATA=%B");
+FSTRACE_DECL(ASYNCHTTP_ICAP_CONTENT_READ_DUMP, "UID=%64u DATA=%A");
 
 static ssize_t content_read(icap_conn_t *conn, void *buf, size_t count)
 {
@@ -773,7 +773,7 @@ static ssize_t content_read(icap_conn_t *conn, void *buf, size_t count)
 }
 
 FSTRACE_DECL(ASYNCHTTP_ICAP_BODY_READ, "UID=%64u WANT=%z GOT=%z ERRNO=%e");
-FSTRACE_DECL(ASYNCHTTP_ICAP_BODY_READ_DUMP, "UID=%64u DATA=%B");
+FSTRACE_DECL(ASYNCHTTP_ICAP_BODY_READ_DUMP, "UID=%64u DATA=%A");
 
 static ssize_t body_read(icap_conn_t *conn, void *buf, size_t count)
 {
@@ -1196,7 +1196,7 @@ const http_env_t *icap_receive(icap_conn_t *conn, http_env_type_t type,
 
 FSTRACE_DECL(ASYNCHTTP_ICAP_CONTINUATION_READ,
              "UID=%64u WANT=%z GOT=%z ERRNO=%e");
-FSTRACE_DECL(ASYNCHTTP_ICAP_CONTINUATION_READ_DUMP, "UID=%64u DATA=%B");
+FSTRACE_DECL(ASYNCHTTP_ICAP_CONTINUATION_READ_DUMP, "UID=%64u DATA=%A");
 
 static ssize_t continuation_read(icap_conn_t *conn, void *buf, size_t count)
 {

@@ -197,7 +197,7 @@ static ssize_t do_chunks_read(http_framer_t *framer, void *buf, size_t count)
 }
 
 FSTRACE_DECL(ASYNCHTTP_FRAMER_CHUNKS_READ, "UID=%64u WANT=%z GOT=%z ERRNO=%e");
-FSTRACE_DECL(ASYNCHTTP_FRAMER_CHUNKS_READ_DUMP, "UID=%64u DATA=%B");
+FSTRACE_DECL(ASYNCHTTP_FRAMER_CHUNKS_READ_DUMP, "UID=%64u DATA=%A");
 
 static ssize_t chunks_read(void *obj, void *buf, size_t count)
 {
@@ -297,7 +297,7 @@ static const char *trace_content_length(void *pclen)
 }
 
 FSTRACE_DECL(ASYNCHTTP_FRAMER_ENV_READ, "UID=%64u WANT=%z GOT=%z ERRNO=%e");
-FSTRACE_DECL(ASYNCHTTP_FRAMER_ENV_READ_DUMP, "UID=%64u TEXT=%A");
+FSTRACE_DECL(ASYNCHTTP_FRAMER_ENV_READ_DUMP, "UID=%64u DATA=%A");
 
 static void probe_env_read(void *obj, const void *buf, size_t size, ssize_t n)
 {
@@ -325,7 +325,7 @@ static queuestream_t *enq_envelope_stream(http_framer_t *framer)
 }
 
 FSTRACE_DECL(ASYNCHTTP_FRAMER_BODY_READ, "UID=%64u WANT=%z GOT=%z ERRNO=%e");
-FSTRACE_DECL(ASYNCHTTP_FRAMER_BODY_READ_DUMP, "UID=%64u DATA=%B");
+FSTRACE_DECL(ASYNCHTTP_FRAMER_BODY_READ_DUMP, "UID=%64u DATA=%A");
 
 static void probe_body_read(void *obj, const void *buf, size_t size, ssize_t n)
 {

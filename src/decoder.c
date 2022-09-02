@@ -467,7 +467,7 @@ static ssize_t do_chunked_wrapper_read(chunked_wrapper_t *wrapper, void *buf,
 FSTRACE_DECL(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_READ,
              "UID=%64u DECODER=%64u WANT=%z GOT=%z ERRNO=%e");
 FSTRACE_DECL(ASYNCHTTP_DECODER_CHUNKED_WRAPPER_READ_DUMP,
-             "UID=%64u DECODER=%64u DATA=%B");
+             "UID=%64u DECODER=%64u DATA=%A");
 
 static ssize_t chunked_wrapper_read(chunked_wrapper_t *wrapper, void *buf,
                                     size_t count)
@@ -566,7 +566,7 @@ static exhaust_wrapper_t *open_exhaust_wrapper(http_decoder_t *decoder)
 FSTRACE_DECL(ASYNCHTTP_DECODER_EXHAUST_WRAPPER_READ,
              "UID=%64u DECODER=%64u WANT=%z GOT=%z ERRNO=%e");
 FSTRACE_DECL(ASYNCHTTP_DECODER_EXHAUST_WRAPPER_READ_DUMP,
-             "UID=%64u DECODER=%64u DATA=%B");
+             "UID=%64u DECODER=%64u DATA=%A");
 
 static ssize_t exhaust_wrapper_read(exhaust_wrapper_t *wrapper, void *buf,
                                     size_t count)
@@ -672,7 +672,7 @@ static ssize_t do_bounded_wrapper_read(bounded_wrapper_t *wrapper, void *buf,
 FSTRACE_DECL(ASYNCHTTP_DECODER_BOUNDED_WRAPPER_READ,
              "UID=%64u DECODER=%64u WANT=%z GOT=%z ERRNO=%e");
 FSTRACE_DECL(ASYNCHTTP_DECODER_BOUNDED_WRAPPER_READ_DUMP,
-             "UID=%64u DECODER=%64u DATA=%B");
+             "UID=%64u DECODER=%64u DATA=%A");
 
 static ssize_t bounded_wrapper_read(bounded_wrapper_t *wrapper, void *buf,
                                     size_t count)

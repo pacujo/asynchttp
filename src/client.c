@@ -1028,7 +1028,7 @@ static void response_closed(http_op_t *op)
 
 FSTRACE_DECL(ASYNCHTTP_OP_WRAPPER_READ_TIMED_OUT, "UID=%64u");
 FSTRACE_DECL(ASYNCHTTP_OP_WRAPPER_READ, "UID=%64u WANT=%z GOT=%z ERRNO=%e");
-FSTRACE_DECL(ASYNCHTTP_OP_WRAPPER_READ_DUMP, "UID=%64u DATA=%B");
+FSTRACE_DECL(ASYNCHTTP_OP_WRAPPER_READ_DUMP, "UID=%64u DATA=%A");
 
 static ssize_t content_wrapper_read(void *obj, void *buf, size_t count)
 {
