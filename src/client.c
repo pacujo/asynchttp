@@ -961,7 +961,8 @@ const http_env_t *http_op_receive_response(http_op_t *op)
             errno = 0; /* pseudo-EOF */
             response = NULL;
     }
-    errno = again_or_timeout(op, errno);
+    if (!response)
+        errno = again_or_timeout(op, errno);
     FSTRACE(ASYNCHTTP_OP_RECEIVED, op->uid, response);
     return response;
 }
