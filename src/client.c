@@ -279,7 +279,9 @@ static void set_proxy(http_client_t *client, char *proxy_host, unsigned port,
     prevent_recycling_of_ops_in_flight(client);
 }
 
-FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_PROXY,
+FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_PROXY_PUBLIC,
+             "UID=%64u HOST=%s PORT=%u USER=%s");
+FSTRACE_DECL(ASYNCHTTP_CLIENT_SET_PROXY_SECRET,
              "UID=%64u HOST=%s PORT=%u USER=%s PASSWORD=%s");
 FSTRACE_DECL(ASYNCHTTP_CLIENT_NON_IDNA_PROXY_HOST, "UID=%64u");
 FSTRACE_DECL(ASYNCHTTP_CLIENT_IDNA_PROXY_HOST, "UID=%64u IDNA=%s");
@@ -288,8 +290,10 @@ bool http_client_set_proxy_2(http_client_t *client, const char *proxy_host,
                              unsigned port, const char *username,
                              const char *password)
 {
-    FSTRACE(ASYNCHTTP_CLIENT_SET_PROXY, client->uid, proxy_host, port, username,
-            password);
+    FSTRACE(ASYNCHTTP_CLIENT_SET_PROXY_PUBLIC, client->uid, proxy_host, port,
+            username);
+    FSTRACE(ASYNCHTTP_CLIENT_SET_PROXY_SECRET, client->uid, proxy_host, port,
+            username, password);
     char *idna = NULL;
     if (proxy_host) {
         idna = charstr_idna_encode(proxy_host);
