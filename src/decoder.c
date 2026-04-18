@@ -677,7 +677,7 @@ FSTRACE_DECL(ASYNCHTTP_DECODER_BOUNDED_WRAPPER_READ_DUMP,
 static ssize_t bounded_wrapper_read(bounded_wrapper_t *wrapper, void *buf,
                                     size_t count)
 {
-    size_t n = do_bounded_wrapper_read(wrapper, buf, count);
+    ssize_t n = do_bounded_wrapper_read(wrapper, buf, count);
     FSTRACE(ASYNCHTTP_DECODER_BOUNDED_WRAPPER_READ, wrapper->uid,
             wrapper->decoder->uid, count, n);
     FSTRACE(ASYNCHTTP_DECODER_BOUNDED_WRAPPER_READ_DUMP, wrapper->uid,
