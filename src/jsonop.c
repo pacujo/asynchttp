@@ -164,7 +164,12 @@ static bool jockey_requested(jsonop_t *op)
         }
         return false;
     }
-    http_op_get_response_content(op->http_op, &op->response_stream);
+    if (http_op_get_response_content(op->http_op, &op->response_stream) < 0) {
+        assert(errno != EAGAIN);
+        op->err = errno;
+        set_op_state(op, JSONOP_FAILED);
+        return false;
+    }
     int response_code = http_env_get_code(op->response_headers);
     if (response_code != 200) {
         set_op_state(op, JSONOP_DONE_OTHER);
